@@ -10,6 +10,7 @@ from homeassistant.components.sensor import (
     SensorEntityDescription,
     SensorStateClass,
 )
+from homeassistant.components.sensor import RestoreSensor
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -82,6 +83,15 @@ SENSOR_DESCRIPTIONS = (
     ),
 )
 
+LIFETIME_DESCRIPTION = SensorEntityDescription(
+    key="cost_savings_lifetime",
+    name="Cost Savings Lifetime",
+    native_unit_of_measurement="EUR",
+    device_class=SensorDeviceClass.MONETARY,
+    state_class=SensorStateClass.TOTAL,
+    icon="mdi:piggy-bank",
+)
+
 
 async def async_setup_entry(
     hass: HomeAssistant,
@@ -91,10 +101,15 @@ async def async_setup_entry(
     """Set up Battery MPC sensors from a config entry."""
     data = hass.data[DOMAIN][entry.entry_id]
     coordinator: BatteryMPCCoordinator = data.coordinator
-    async_add_entities(
+
+    entities: list[SensorEntity] = [
         BatteryMPCSensor(coordinator=coordinator, entity_description=desc)
         for desc in SENSOR_DESCRIPTIONS
-    )
+    ]
+    # Lifetime savings — uses RestoreSensor to persist across restarts
+    entities.append(BatteryMPCLifetimeSensor(coordinator=coordinator))
+
+    async_add_entities(entities)
 
 
 class BatteryMPCSensor(BatteryMPCEntity, SensorEntity):
@@ -128,3 +143,33 @@ class BatteryMPCSensor(BatteryMPCEntity, SensorEntity):
             "schedule": self.coordinator.data.get("schedule"),
             "horizon_hours": self.coordinator.data.get("horizon_hours"),
         }
+
+
+class BatteryMPCLifetimeSensor(BatteryMPCEntity, RestoreSensor):
+    """Lifetime cost savings sensor — persists across HA restarts."""
+
+    entity_description = LIFETIME_DESCRIPTION
+
+    def __init__(self, coordinator: BatteryMPCCoordinator) -> None:
+        super().__init__(coordinator)
+        self._attr_unique_id = (
+            f"{coordinator.config_entry.entry_id}_cost_savings_lifetime"
+        )
+        self._restored_value: float | None = None
+
+    async def async_added_to_hass(self) -> None:
+        """Restore previous lifetime value on startup."""
+        await super().async_added_to_hass()
+        last = await self.async_get_last_sensor_data()
+        if last and last.native_value is not None:
+            try:
+                self._restored_value = float(last.native_value)
+                self.coordinator._cost_savings_lifetime = self._restored_value
+            except (ValueError, TypeError):
+                pass
+
+    @property
+    def native_value(self) -> float | None:
+        if self.coordinator.data is None:
+            return self._restored_value
+        return self.coordinator.data.get("cost_savings_lifetime", self._restored_value)

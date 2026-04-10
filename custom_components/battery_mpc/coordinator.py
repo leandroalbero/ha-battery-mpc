@@ -45,6 +45,7 @@ class BatteryMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._cost_savings_today = 0.0
         self._cost_actual_today = 0.0
         self._cost_baseline_today = 0.0
+        self._cost_savings_lifetime = 0.0
         self._today = None
 
     async def _async_update_data(self) -> dict[str, Any]:
@@ -110,6 +111,7 @@ class BatteryMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._cost_actual_today += actual_cost
             self._cost_baseline_today += baseline_cost
             self._cost_savings_today = self._cost_baseline_today - self._cost_actual_today
+            self._cost_savings_lifetime += baseline_cost - actual_cost
 
             # Build forecast arrays
             n_steps = MPC_HORIZON_HOURS * 60 // MPC_STEP_MINUTES
@@ -182,6 +184,7 @@ class BatteryMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "cost_savings_today": round(self._cost_savings_today, 3),
                 "cost_actual_today": round(self._cost_actual_today, 3),
                 "cost_baseline_today": round(self._cost_baseline_today, 3),
+                "cost_savings_lifetime": round(self._cost_savings_lifetime, 2),
                 "solve_time_ms": round(result.solve_time_ms, 1),
                 "horizon_hours": MPC_HORIZON_HOURS,
                 "schedule": schedule,
