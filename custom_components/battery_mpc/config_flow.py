@@ -27,6 +27,13 @@ class BatteryMPCFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
 
     VERSION = 2
 
+    @staticmethod
+    def async_get_options_flow(
+        config_entry: config_entries.ConfigEntry,
+    ) -> BatteryMPCOptionsFlowHandler:
+        """Get the options flow handler."""
+        return BatteryMPCOptionsFlowHandler(config_entry)
+
     def __init__(self) -> None:
         """Initialize."""
         self._data: dict[str, Any] = {}
@@ -195,6 +202,95 @@ class BatteryMPCFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
                 ),
                 vol.Optional("charge_power_entity_id"): EntitySelector(
                     EntitySelectorConfig(domain="number"),
+                ),
+            }),
+        )
+
+
+class BatteryMPCOptionsFlowHandler(config_entries.OptionsFlow):
+    """Handle options flow — edit settings after initial setup."""
+
+    def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
+        """Initialize."""
+        self._config_entry = config_entry
+
+    async def async_step_init(
+        self, user_input: dict[str, Any] | None = None,
+    ) -> config_entries.FlowResult:
+        """Main options page."""
+        if user_input is not None:
+            # Merge into config entry data
+            new_data = dict(self._config_entry.data)
+            # Handle efficiency conversion
+            if "efficiency" in user_input:
+                user_input["efficiency"] = user_input["efficiency"] / 100.0
+            # Rebuild tariff from prices
+            if "valley_price" in user_input:
+                new_data["tariff"] = {
+                    "valley": {"hours": (0, 8), "price": user_input.pop("valley_price")},
+                    "shoulder_morning": {"hours": (8, 10), "price": user_input.get("shoulder_price", 0.135)},
+                    "peak_morning": {"hours": (10, 14), "price": user_input.get("peak_price", 0.197)},
+                    "shoulder_afternoon": {"hours": (14, 18), "price": user_input.pop("shoulder_price", 0.135)},
+                    "peak_evening": {"hours": (18, 22), "price": user_input.pop("peak_price", 0.197)},
+                    "shoulder_night": {"hours": (22, 24), "price": new_data["tariff"]["shoulder_morning"]["price"]},
+                }
+                new_data["export_rate"] = user_input.pop("export_rate", 0.08)
+            new_data.update(user_input)
+            self.hass.config_entries.async_update_entry(self._config_entry, data=new_data)
+            return self.async_create_entry(title="", data={})
+
+        # Pre-fill with current values
+        d = self._config_entry.data
+        tariff = d.get("tariff", {})
+        valley_price = tariff.get("valley", {}).get("price", 0.085)
+        shoulder_price = tariff.get("shoulder_morning", {}).get("price", 0.135)
+        peak_price = tariff.get("peak_morning", {}).get("price", 0.197)
+
+        return self.async_show_form(
+            step_id="init",
+            data_schema=vol.Schema({
+                # Battery
+                vol.Required("battery_capacity_kwh", default=d.get("battery_capacity_kwh", 15.0)): NumberSelector(
+                    NumberSelectorConfig(min=0.5, max=200, step=0.1, unit_of_measurement="kWh", mode="box"),
+                ),
+                vol.Required("max_charge_kw", default=d.get("max_charge_kw", 4.8)): NumberSelector(
+                    NumberSelectorConfig(min=0.1, max=50, step=0.1, unit_of_measurement="kW", mode="box"),
+                ),
+                vol.Required("max_discharge_kw", default=d.get("max_discharge_kw", 4.8)): NumberSelector(
+                    NumberSelectorConfig(min=0.1, max=50, step=0.1, unit_of_measurement="kW", mode="box"),
+                ),
+                vol.Required("min_soc", default=d.get("min_soc", 10)): NumberSelector(
+                    NumberSelectorConfig(min=0, max=50, step=1, unit_of_measurement="%", mode="box"),
+                ),
+                vol.Required("efficiency", default=round(d.get("efficiency", 0.95) * 100)): NumberSelector(
+                    NumberSelectorConfig(min=70, max=100, step=1, unit_of_measurement="%", mode="box"),
+                ),
+                # Tariff
+                vol.Required("valley_price", default=valley_price): NumberSelector(
+                    NumberSelectorConfig(min=0, max=1, step=0.001, unit_of_measurement="EUR/kWh", mode="box"),
+                ),
+                vol.Required("shoulder_price", default=shoulder_price): NumberSelector(
+                    NumberSelectorConfig(min=0, max=1, step=0.001, unit_of_measurement="EUR/kWh", mode="box"),
+                ),
+                vol.Required("peak_price", default=peak_price): NumberSelector(
+                    NumberSelectorConfig(min=0, max=1, step=0.001, unit_of_measurement="EUR/kWh", mode="box"),
+                ),
+                vol.Required("export_rate", default=d.get("export_rate", 0.08)): NumberSelector(
+                    NumberSelectorConfig(min=0, max=1, step=0.001, unit_of_measurement="EUR/kWh", mode="box"),
+                ),
+                # Sensors
+                vol.Required("soc_sensor_entity_id", default=d.get("soc_sensor_entity_id", "")): EntitySelector(
+                    EntitySelectorConfig(domain="sensor", device_class="battery"),
+                ),
+                vol.Optional("pv_power_entity_id", default=d.get("pv_power_entity_id", "")): EntitySelector(
+                    EntitySelectorConfig(domain="sensor", device_class="power"),
+                ),
+                vol.Optional("load_sensor_entity_id", default=d.get("load_sensor_entity_id", "")): EntitySelector(
+                    EntitySelectorConfig(domain="sensor", device_class="power"),
+                ),
+                # Inverter
+                vol.Optional("goodwe_operation_mode_entity_id", default=d.get("goodwe_operation_mode_entity_id", "")): EntitySelector(
+                    EntitySelectorConfig(domain="select"),
                 ),
             }),
         )
