@@ -186,28 +186,72 @@ class BatteryMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     async def _apply_goodwe(self, action: str, power_w: float) -> None:
         """GoodWe inverter control via the HA goodwe integration.
 
+        Auto-discovers available GoodWe entities and uses them:
+        - select.goodwe_inverter_operation_mode: eco_charge / general
+        - number.goodwe_eco_mode_power: charge power as % of rated (0-100)
+        - number.goodwe_eco_mode_soc: target SoC for eco charge (0-100)
+
         Mode mapping:
-        - charge  -> eco_charge: force charge from grid during cheap hours
-        - discharge/idle -> general: self-use mode where battery naturally
-          covers house load (avoids wasteful forced export at low rates)
+        - charge  -> set eco_mode_power + eco_mode_soc, then eco_charge
+        - discharge/idle -> general (self-use, battery covers house load)
         """
         mode_entity = self._config.get("goodwe_operation_mode_entity_id")
         if not mode_entity:
             LOGGER.warning("GoodWe operation mode entity not configured")
             return
 
+        # Auto-discover sibling GoodWe entities from the mode entity prefix
+        # e.g., select.goodwe_inverter_operation_mode -> "goodwe"
+        prefix = self._find_goodwe_prefix()
+        power_pct_entity = f"number.{prefix}_eco_mode_power" if prefix else None
+        soc_target_entity = f"number.{prefix}_eco_mode_soc" if prefix else None
+        dod_entity = f"number.{prefix}_depth_of_discharge_on_grid" if prefix else None
+
         if action == "charge":
+            # Set charge power as % of rated inverter power
+            if power_pct_entity and self._entity_exists(power_pct_entity):
+                rated_w = self._config.get("max_charge_kw", 4.8) * 1000
+
+                # Safety: leave headroom for house consumption so we don't
+                # exceed the contracted grid import limit (5.5 kW typical).
+                # charge_power + house_load <= grid_limit
+                grid_limit_w = self._config.get("max_grid_import_kw", 5.5) * 1000
+                load_entity = self._config.get("load_sensor_entity_id")
+                current_load_w = 0.0
+                if load_entity:
+                    current_load_w = self._get_sensor_value(load_entity, default=1500.0)
+                else:
+                    current_load_w = 1500.0  # safe default
+                safe_charge_w = max(0, min(power_w, grid_limit_w - current_load_w))
+
+                target_pct = min(100, max(1, round(safe_charge_w / rated_w * 100)))
+                current_pct = self._get_sensor_value(power_pct_entity, default=-1)
+                if current_pct != target_pct:
+                    LOGGER.info(
+                        "GoodWe: eco_mode_power %d%% -> %d%% "
+                        "(LP=%.0fW, safe=%.0fW, load=%.0fW, grid_limit=%.0fW)",
+                        current_pct, target_pct,
+                        power_w, safe_charge_w, current_load_w, grid_limit_w,
+                    )
+                    await self._set_number(power_pct_entity, target_pct)
+
+            # Set target SoC to 100% for charging
+            if soc_target_entity and self._entity_exists(soc_target_entity):
+                current_soc_target = self._get_sensor_value(soc_target_entity, default=-1)
+                if current_soc_target != 100:
+                    await self._set_number(soc_target_entity, 100)
+
             target_mode = "eco_charge"
         else:
             target_mode = "general"
 
-        # Only send command if mode actually needs to change
+        # Only send mode command if it actually needs to change
         current_state = self.hass.states.get(mode_entity)
         if current_state and current_state.state == target_mode:
             return
 
         LOGGER.info(
-            "GoodWe: setting %s to '%s' (power=%.0fW)",
+            "GoodWe: %s -> '%s' (LP wants %.0fW)",
             mode_entity, target_mode, power_w,
         )
 
@@ -219,6 +263,33 @@ class BatteryMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             )
         except Exception as err:
             LOGGER.error("Failed to set GoodWe mode: %s", err)
+
+    def _find_goodwe_prefix(self) -> str | None:
+        """Extract the GoodWe entity prefix (e.g., 'goodwe') from the mode entity."""
+        mode_entity = self._config.get("goodwe_operation_mode_entity_id", "")
+        # select.goodwe_inverter_operation_mode -> goodwe
+        name = mode_entity.replace("select.", "")
+        if "_inverter_operation_mode" in name:
+            return name.replace("_inverter_operation_mode", "")
+        # Fallback: try everything before the last known suffix
+        parts = name.rsplit("_", 3)
+        return parts[0] if parts else None
+
+    def _entity_exists(self, entity_id: str) -> bool:
+        """Check if an entity exists in HA."""
+        state = self.hass.states.get(entity_id)
+        return state is not None and state.state not in ("unavailable",)
+
+    async def _set_number(self, entity_id: str, value: float) -> None:
+        """Set a number entity value."""
+        try:
+            await self.hass.services.async_call(
+                "number", "set_value",
+                {"entity_id": entity_id, "value": value},
+                blocking=True,
+            )
+        except Exception as err:
+            LOGGER.error("Failed to set %s to %s: %s", entity_id, value, err)
 
     async def _apply_generic(self, action: str, power_w: float) -> None:
         """Generic inverter control via HA switch/number entities."""
