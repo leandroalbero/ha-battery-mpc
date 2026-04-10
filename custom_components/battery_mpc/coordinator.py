@@ -186,10 +186,10 @@ class BatteryMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     async def _apply_goodwe(self, action: str, power_w: float) -> None:
         """GoodWe inverter control via the HA goodwe integration.
 
-        Uses the operation_mode select entity to switch between:
-        - eco_charge: force charge from grid (uses Eco Mode with charge group)
-        - eco_discharge: force discharge (uses Eco Mode with discharge group)
-        - general: normal self-use operation (idle/solar self-consume)
+        Mode mapping:
+        - charge  -> eco_charge: force charge from grid during cheap hours
+        - discharge/idle -> general: self-use mode where battery naturally
+          covers house load (avoids wasteful forced export at low rates)
         """
         mode_entity = self._config.get("goodwe_operation_mode_entity_id")
         if not mode_entity:
@@ -198,8 +198,6 @@ class BatteryMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         if action == "charge":
             target_mode = "eco_charge"
-        elif action == "discharge":
-            target_mode = "eco_discharge"
         else:
             target_mode = "general"
 
