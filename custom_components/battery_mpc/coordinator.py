@@ -64,13 +64,27 @@ class BatteryMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 self._solar_forecast is None
                 or self._solar_forecast.age_minutes > FORECAST_REFRESH_MINUTES
             ):
-                session = async_get_clientsession(self.hass)
-                self._solar_forecast = await fetch_solar_forecast(
-                    session,
-                    self._config["latitude"],
-                    self._config["longitude"],
-                    api_key=self._config.get("open_meteo_api_key"),
-                )
+                try:
+                    session = async_get_clientsession(self.hass)
+                    new_forecast = await fetch_solar_forecast(
+                        session,
+                        self._config["latitude"],
+                        self._config["longitude"],
+                        api_key=self._config.get("open_meteo_api_key"),
+                    )
+                    # Only replace if we got actual data
+                    if new_forecast and len(new_forecast._timestamps) > 0:
+                        self._solar_forecast = new_forecast
+                    else:
+                        LOGGER.warning("Empty forecast returned, keeping previous")
+                except Exception as err:
+                    LOGGER.warning("Forecast fetch failed, using cached: %s", err)
+                    # Keep using the old forecast — don't crash the MPC
+
+            # If we still have no forecast at all, use zeros
+            if self._solar_forecast is None:
+                from .forecast import SolarForecast
+                self._solar_forecast = SolarForecast([], [])
 
             # Read current SoC from HA sensor
             current_soc_pct = self._get_sensor_value(
