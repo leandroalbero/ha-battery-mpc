@@ -14,11 +14,21 @@
         "title": "Battery Specifications",
         "description": "Configure your battery system parameters.",
         "data": {
-          "battery_capacity_kwh": "Battery Capacity",
-          "max_charge_kw": "Max Charge Rate",
-          "max_discharge_kw": "Max Discharge Rate",
-          "min_soc": "Minimum State of Charge",
-          "efficiency": "Round-trip Efficiency"
+          "battery_capacity_kwh": "Battery Capacity (kWh)",
+          "max_charge_kw": "Max Charge Rate (kW)",
+          "max_discharge_kw": "Max Discharge Rate (kW)",
+          "min_soc": "Minimum State of Charge (%)",
+          "efficiency": "Round-trip Efficiency (%)"
+        }
+      },
+      "tariff": {
+        "title": "Electricity Tariff",
+        "description": "Set your import prices for each period (EUR/kWh). Uses Spain 2.0TD time bands: Valley 00-08, Shoulder 08-10 + 14-18 + 22-24, Peak 10-14 + 18-22.",
+        "data": {
+          "valley_price": "Valley Price (EUR/kWh, 00:00-08:00)",
+          "shoulder_price": "Shoulder Price (EUR/kWh)",
+          "peak_price": "Peak Price (EUR/kWh)",
+          "export_rate": "Export Rate (EUR/kWh)"
         }
       },
       "sensors": {
