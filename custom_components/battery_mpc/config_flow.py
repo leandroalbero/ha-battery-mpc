@@ -55,6 +55,7 @@ class BatteryMPCFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
                 vol.Required("min_soc", default=10): vol.Coerce(int),
                 vol.Required("efficiency", default=95): vol.Coerce(int),
                 vol.Required("max_grid_import_kw", default=5.5): vol.Coerce(float),
+                vol.Required("inverter_rated_power_kw", default=4.6): vol.Coerce(float),
             }),
         )
 
@@ -228,6 +229,7 @@ class BatteryMPCOptionsFlowHandler(config_entries.OptionsFlow):
                 vol.Required("min_soc", default=d.get("min_soc", 10)): vol.Coerce(int),
                 vol.Required("efficiency", default=round(d.get("efficiency", 0.95) * 100)): vol.Coerce(int),
                 vol.Required("max_grid_import_kw", default=d.get("max_grid_import_kw", 5.5)): vol.Coerce(float),
+                vol.Required("inverter_rated_power_kw", default=d.get("inverter_rated_power_kw", 4.6)): vol.Coerce(float),
                 # Tariff
                 vol.Required("valley_price", default=tariff.get("valley", {}).get("price", 0.085)): vol.Coerce(float),
                 vol.Required("shoulder_price", default=tariff.get("shoulder_morning", {}).get("price", 0.135)): vol.Coerce(float),

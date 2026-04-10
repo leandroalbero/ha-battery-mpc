@@ -19,7 +19,8 @@
           "max_discharge_kw": "Max Discharge Rate (kW)",
           "min_soc": "Minimum SoC (%)",
           "efficiency": "Round-trip Efficiency (%)",
-          "max_grid_import_kw": "Contracted Grid Import Limit (kW)"
+          "max_grid_import_kw": "Contracted Grid Import Limit (kW)",
+          "inverter_rated_power_kw": "Inverter Rated Power (kW)"
         }
       },
       "tariff": {
