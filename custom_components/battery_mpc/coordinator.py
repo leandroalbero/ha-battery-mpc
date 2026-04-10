@@ -1,0 +1,275 @@
+"""DataUpdateCoordinator for Battery MPC — runs optimization every 5 minutes."""
+
+from __future__ import annotations
+
+from datetime import datetime, timedelta
+from functools import partial
+from typing import Any
+
+import numpy as np
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
+
+from .const import (
+    DEFAULT_EXPORT_RATE,
+    DEFAULT_TARIFF,
+    DOMAIN,
+    FORECAST_REFRESH_MINUTES,
+    LOGGER,
+    MPC_HORIZON_HOURS,
+    MPC_STEP_MINUTES,
+    MPC_UPDATE_INTERVAL_MINUTES,
+)
+from .forecast import LoadForecaster, SolarForecast, fetch_solar_forecast
+from .solver import solve_mpc
+
+
+class BatteryMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
+    """Fetches forecast + runs MPC optimization every 5 minutes."""
+
+    config_entry: ConfigEntry
+
+    def __init__(self, hass: HomeAssistant, config_entry: ConfigEntry) -> None:
+        super().__init__(
+            hass,
+            LOGGER,
+            name=DOMAIN,
+            config_entry=config_entry,
+            update_interval=timedelta(minutes=MPC_UPDATE_INTERVAL_MINUTES),
+        )
+        self._config = config_entry.data
+        self._solar_forecast: SolarForecast | None = None
+        self._load_forecaster = LoadForecaster()
+        self._cost_savings_today = 0.0
+        self._today = None
+
+    async def _async_update_data(self) -> dict[str, Any]:
+        try:
+            now = datetime.now()
+
+            # Reset daily savings counter
+            if self._today != now.date():
+                self._today = now.date()
+                self._cost_savings_today = 0.0
+
+            # Refresh solar forecast if stale or missing
+            if (
+                self._solar_forecast is None
+                or self._solar_forecast.age_minutes > FORECAST_REFRESH_MINUTES
+            ):
+                session = async_get_clientsession(self.hass)
+                self._solar_forecast = await fetch_solar_forecast(
+                    session,
+                    self._config["latitude"],
+                    self._config["longitude"],
+                    api_key=self._config.get("open_meteo_api_key"),
+                )
+
+            # Read current SoC from HA sensor
+            current_soc_pct = self._get_sensor_value(
+                self._config["soc_sensor_entity_id"], default=50.0,
+            )
+            battery_cap = self._config["battery_capacity_kwh"]
+            current_soc_kwh = current_soc_pct / 100.0 * battery_cap
+
+            # Read current house consumption if sensor configured
+            current_load_kw = 0.0
+            load_entity = self._config.get("load_sensor_entity_id")
+            if load_entity:
+                current_load_kw = self._get_sensor_value(load_entity, default=0.0) / 1000.0
+
+            # Read current PV power if sensor configured
+            current_pv_kw = 0.0
+            pv_entity = self._config.get("pv_power_entity_id")
+            if pv_entity:
+                current_pv_kw = self._get_sensor_value(pv_entity, default=0.0) / 1000.0
+
+            # Build forecast arrays
+            n_steps = MPC_HORIZON_HOURS * 60 // MPC_STEP_MINUTES
+            solar_fc = self._solar_forecast.get_pv_forecast(now, n_steps, MPC_STEP_MINUTES)
+            load_fc = self._load_forecaster.forecast(now, n_steps, MPC_STEP_MINUTES)
+
+            # Override first step with actual values if available
+            if current_pv_kw > 0 or current_load_kw > 0:
+                solar_fc[0] = current_pv_kw
+                load_fc[0] = current_load_kw
+
+            hours = np.array([
+                (now + timedelta(minutes=i * MPC_STEP_MINUTES)).hour
+                for i in range(n_steps)
+            ])
+
+            tariff = self._config.get("tariff", DEFAULT_TARIFF)
+            export_rate = self._config.get("export_rate", DEFAULT_EXPORT_RATE)
+
+            # Solve MPC in executor thread (scipy is blocking)
+            result = await self.hass.async_add_executor_job(
+                partial(
+                    solve_mpc,
+                    solar_forecast=solar_fc,
+                    load_forecast=load_fc,
+                    hours=hours,
+                    tariff_schedule=tariff,
+                    export_rate=export_rate,
+                    dt_hours=MPC_STEP_MINUTES / 60.0,
+                    battery_capacity=battery_cap,
+                    max_charge_rate=self._config["max_charge_kw"],
+                    max_discharge_rate=self._config["max_discharge_kw"],
+                    efficiency=self._config.get("efficiency", 0.95),
+                    current_soc_kwh=current_soc_kwh,
+                    min_soc_frac=self._config["min_soc"] / 100.0,
+                    max_grid_import=self._config.get("max_grid_import_kw", 5.0),
+                    max_grid_export=self._config.get("max_grid_export_kw", 5.0),
+                )
+            )
+
+            if not result.success:
+                LOGGER.warning("MPC solve failed, keeping idle")
+
+            # Apply action to inverter
+            await self._apply_action(result.next_action, result.next_power_w)
+
+            # Build schedule summary (hourly)
+            step_per_hour = 60 // MPC_STEP_MINUTES
+            schedule = []
+            for i in range(0, n_steps, step_per_hour):
+                ts = now + timedelta(minutes=i * MPC_STEP_MINUTES)
+                schedule.append({
+                    "time": ts.strftime("%H:%M"),
+                    "action": "charge" if result.charge[i] > 0.05 else (
+                        "discharge" if result.discharge[i] > 0.05 else "idle"
+                    ),
+                    "power_kw": round(result.charge[i] - result.discharge[i], 2),
+                    "soc_pct": round(result.soc[i] / battery_cap * 100, 1),
+                    "solar_kw": round(float(solar_fc[i]), 2),
+                    "load_kw": round(float(load_fc[i]), 2),
+                })
+
+            return {
+                "next_action": result.next_action,
+                "target_power": round(result.next_power_w),
+                "target_soc": round(result.soc[0] / battery_cap * 100, 1),
+                "current_soc": round(current_soc_pct, 1),
+                "forecast_pv_power": round(solar_fc[0] * 1000),
+                "forecast_load": round(load_fc[0] * 1000),
+                "cost_savings_today": round(self._cost_savings_today, 2),
+                "solve_time_ms": round(result.solve_time_ms, 1),
+                "horizon_hours": MPC_HORIZON_HOURS,
+                "schedule": schedule,
+                "forecast_age_min": round(self._solar_forecast.age_minutes, 1),
+            }
+
+        except Exception as err:
+            raise UpdateFailed(f"MPC optimization failed: {err}") from err
+
+    def _get_sensor_value(self, entity_id: str, default: float = 0.0) -> float:
+        """Read a numeric sensor value from HA state."""
+        state = self.hass.states.get(entity_id)
+        if state is None or state.state in ("unknown", "unavailable"):
+            return default
+        try:
+            return float(state.state)
+        except (ValueError, TypeError):
+            return default
+
+    async def _apply_action(self, action: str, power_w: float) -> None:
+        """Send charge/discharge command to the inverter."""
+        inverter_type = self._config.get("inverter_type", "generic")
+
+        if inverter_type == "goodwe":
+            await self._apply_goodwe(action, power_w)
+        else:
+            await self._apply_generic(action, power_w)
+
+    async def _apply_goodwe(self, action: str, power_w: float) -> None:
+        """GoodWe inverter control via the HA goodwe integration.
+
+        Uses the operation_mode select entity to switch between:
+        - eco_charge: force charge from grid (uses Eco Mode with charge group)
+        - eco_discharge: force discharge (uses Eco Mode with discharge group)
+        - general: normal self-use operation (idle/solar self-consume)
+        """
+        mode_entity = self._config.get("goodwe_operation_mode_entity_id")
+        if not mode_entity:
+            LOGGER.warning("GoodWe operation mode entity not configured")
+            return
+
+        if action == "charge":
+            target_mode = "eco_charge"
+        elif action == "discharge":
+            target_mode = "eco_discharge"
+        else:
+            target_mode = "general"
+
+        # Only send command if mode actually needs to change
+        current_state = self.hass.states.get(mode_entity)
+        if current_state and current_state.state == target_mode:
+            return
+
+        LOGGER.info(
+            "GoodWe: setting %s to '%s' (power=%.0fW)",
+            mode_entity, target_mode, power_w,
+        )
+
+        try:
+            await self.hass.services.async_call(
+                "select", "select_option",
+                {"entity_id": mode_entity, "option": target_mode},
+                blocking=True,
+            )
+        except Exception as err:
+            LOGGER.error("Failed to set GoodWe mode: %s", err)
+
+    async def _apply_generic(self, action: str, power_w: float) -> None:
+        """Generic inverter control via HA switch/number entities."""
+        charge_entity = self._config.get("charge_switch_entity_id")
+        discharge_entity = self._config.get("discharge_switch_entity_id")
+        power_entity = self._config.get("charge_power_entity_id")
+
+        if action == "charge":
+            if power_entity:
+                await self.hass.services.async_call(
+                    "number", "set_value",
+                    {"entity_id": power_entity, "value": power_w},
+                    blocking=True,
+                )
+            if charge_entity:
+                await self.hass.services.async_call(
+                    "switch", "turn_on",
+                    {"entity_id": charge_entity},
+                    blocking=True,
+                )
+            if discharge_entity:
+                await self.hass.services.async_call(
+                    "switch", "turn_off",
+                    {"entity_id": discharge_entity},
+                    blocking=True,
+                )
+        elif action == "discharge":
+            if charge_entity:
+                await self.hass.services.async_call(
+                    "switch", "turn_off",
+                    {"entity_id": charge_entity},
+                    blocking=True,
+                )
+            if discharge_entity:
+                await self.hass.services.async_call(
+                    "switch", "turn_on",
+                    {"entity_id": discharge_entity},
+                    blocking=True,
+                )
+        else:  # idle
+            if charge_entity:
+                await self.hass.services.async_call(
+                    "switch", "turn_off",
+                    {"entity_id": charge_entity},
+                    blocking=True,
+                )
+            if discharge_entity:
+                await self.hass.services.async_call(
+                    "switch", "turn_off",
+                    {"entity_id": discharge_entity},
+                    blocking=True,
+                )

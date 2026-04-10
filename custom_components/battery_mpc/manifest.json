@@ -1,0 +1,13 @@
+{
+  "domain": "battery_mpc",
+  "name": "Battery MPC Controller",
+  "version": "1.0.0",
+  "codeowners": ["@leandroalbero"],
+  "config_flow": true,
+  "documentation": "https://github.com/leandroalbero/ha-battery-mpc",
+  "issue_tracker": "https://github.com/leandroalbero/ha-battery-mpc/issues",
+  "iot_class": "cloud_polling",
+  "integration_type": "service",
+  "dependencies": [],
+  "requirements": ["scipy>=1.11.0"]
+}

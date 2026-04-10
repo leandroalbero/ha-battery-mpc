@@ -1,0 +1,56 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Solar Location",
+        "description": "Enter your location for solar irradiance forecasts from Open-Meteo. API key is optional (free tier: 10,000 calls/day).",
+        "data": {
+          "latitude": "Latitude",
+          "longitude": "Longitude",
+          "open_meteo_api_key": "Open-Meteo API Key (optional)"
+        }
+      },
+      "battery": {
+        "title": "Battery Specifications",
+        "description": "Configure your battery system parameters.",
+        "data": {
+          "battery_capacity_kwh": "Battery Capacity",
+          "max_charge_kw": "Max Charge Rate",
+          "max_discharge_kw": "Max Discharge Rate",
+          "min_soc": "Minimum State of Charge",
+          "efficiency": "Round-trip Efficiency"
+        }
+      },
+      "sensors": {
+        "title": "Sensors & Inverter Type",
+        "description": "Select your battery SoC sensor and inverter type.",
+        "data": {
+          "soc_sensor_entity_id": "Battery SoC Sensor",
+          "pv_power_entity_id": "PV Power Sensor (optional)",
+          "load_sensor_entity_id": "House Consumption Sensor (optional)",
+          "inverter_type": "Inverter Type"
+        }
+      },
+      "inverter_goodwe": {
+        "title": "GoodWe Inverter",
+        "description": "Select the GoodWe operation mode entity. The integration will switch between eco_charge, eco_discharge, and general modes.",
+        "data": {
+          "goodwe_operation_mode_entity_id": "GoodWe Operation Mode Select"
+        }
+      },
+      "inverter_generic": {
+        "title": "Inverter Control Entities",
+        "description": "Map the HA entities used to control your inverter.",
+        "data": {
+          "charge_switch_entity_id": "Charge Enable Switch",
+          "discharge_switch_entity_id": "Discharge Enable Switch",
+          "charge_power_entity_id": "Charge Power Number Entity"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Failed to connect to Open-Meteo",
+      "unknown": "Unknown error occurred"
+    }
+  }
+}

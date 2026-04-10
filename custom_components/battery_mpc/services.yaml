@@ -1,0 +1,68 @@
+force_charge:
+  name: Force Charge
+  description: "Override MPC and force battery to charge at specified power"
+  fields:
+    power_watts:
+      name: Power
+      description: "Charge power in watts"
+      required: true
+      example: 2500
+      selector:
+        number:
+          min: 0
+          max: 10000
+          unit_of_measurement: W
+    duration_minutes:
+      name: Duration
+      description: "How long to force charge (MPC resumes after)"
+      required: false
+      default: 30
+      selector:
+        number:
+          min: 5
+          max: 480
+          unit_of_measurement: min
+
+force_discharge:
+  name: Force Discharge
+  description: "Override MPC and force battery to discharge at specified power"
+  fields:
+    power_watts:
+      name: Power
+      description: "Discharge power in watts"
+      required: true
+      example: 2500
+      selector:
+        number:
+          min: 0
+          max: 10000
+          unit_of_measurement: W
+    duration_minutes:
+      name: Duration
+      description: "How long to force discharge (MPC resumes after)"
+      required: false
+      default: 30
+      selector:
+        number:
+          min: 5
+          max: 480
+          unit_of_measurement: min
+
+set_idle:
+  name: Set Idle
+  description: "Override MPC and set battery to idle (no charge/discharge)"
+  fields:
+    duration_minutes:
+      name: Duration
+      description: "How long to stay idle (MPC resumes after)"
+      required: false
+      default: 30
+      selector:
+        number:
+          min: 5
+          max: 480
+          unit_of_measurement: min
+
+refresh_forecast:
+  name: Refresh Forecast
+  description: "Force a fresh solar forecast fetch from Open-Meteo"
