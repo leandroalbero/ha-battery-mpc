@@ -6,7 +6,18 @@ from typing import Any
 
 import voluptuous as vol
 from homeassistant import config_entries
-from homeassistant.core import callback
+from homeassistant.helpers.selector import (
+    EntitySelector,
+    EntitySelectorConfig,
+    NumberSelector,
+    NumberSelectorConfig,
+    SelectSelector,
+    SelectSelectorConfig,
+    SelectSelectorMode,
+    TextSelector,
+    TextSelectorConfig,
+    TextSelectorType,
+)
 
 from .const import DOMAIN
 
@@ -31,9 +42,15 @@ class BatteryMPCFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
         return self.async_show_form(
             step_id="user",
             data_schema=vol.Schema({
-                vol.Required("latitude", default=self.hass.config.latitude): vol.Coerce(float),
-                vol.Required("longitude", default=self.hass.config.longitude): vol.Coerce(float),
-                vol.Optional("open_meteo_api_key", default=""): str,
+                vol.Required("latitude", default=self.hass.config.latitude): NumberSelector(
+                    NumberSelectorConfig(min=-90, max=90, step=0.0001, mode="box"),
+                ),
+                vol.Required("longitude", default=self.hass.config.longitude): NumberSelector(
+                    NumberSelectorConfig(min=-180, max=180, step=0.0001, mode="box"),
+                ),
+                vol.Optional("open_meteo_api_key", default=""): TextSelector(
+                    TextSelectorConfig(type=TextSelectorType.PASSWORD),
+                ),
             }),
         )
 
@@ -49,30 +66,32 @@ class BatteryMPCFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
         return self.async_show_form(
             step_id="battery",
             data_schema=vol.Schema({
-                vol.Required("battery_capacity_kwh", default=15.0): vol.Coerce(float),
-                vol.Required("max_charge_kw", default=4.8): vol.Coerce(float),
-                vol.Required("max_discharge_kw", default=4.8): vol.Coerce(float),
-                vol.Required("min_soc", default=10): vol.Coerce(int),
-                vol.Required("efficiency", default=95): vol.Coerce(int),
+                vol.Required("battery_capacity_kwh", default=15.0): NumberSelector(
+                    NumberSelectorConfig(min=0.5, max=200, step=0.1, unit_of_measurement="kWh", mode="box"),
+                ),
+                vol.Required("max_charge_kw", default=4.8): NumberSelector(
+                    NumberSelectorConfig(min=0.1, max=50, step=0.1, unit_of_measurement="kW", mode="box"),
+                ),
+                vol.Required("max_discharge_kw", default=4.8): NumberSelector(
+                    NumberSelectorConfig(min=0.1, max=50, step=0.1, unit_of_measurement="kW", mode="box"),
+                ),
+                vol.Required("min_soc", default=10): NumberSelector(
+                    NumberSelectorConfig(min=0, max=50, step=1, unit_of_measurement="%", mode="box"),
+                ),
+                vol.Required("efficiency", default=95): NumberSelector(
+                    NumberSelectorConfig(min=70, max=100, step=1, unit_of_measurement="%", mode="box"),
+                ),
             }),
         )
 
     async def async_step_tariff(
         self, user_input: dict[str, Any] | None = None,
     ) -> config_entries.FlowResult:
-        """Step 3: Electricity tariff configuration.
-
-        Uses 3 price tiers mapped to the Spain 2.0TD time bands:
-          Valley:   00-08 (cheapest)
-          Shoulder: 08-10, 14-18, 22-24
-          Peak:     10-14, 18-22 (most expensive)
-        Users set the 3 prices + export rate.
-        """
+        """Step 3: Electricity tariff (Spain 2.0TD time bands)."""
         if user_input is not None:
             vp = user_input["valley_price"]
             sp = user_input["shoulder_price"]
             pp = user_input["peak_price"]
-            # Build full Spain 2.0TD schedule with user prices
             self._data["tariff"] = {
                 "valley": {"hours": (0, 8), "price": vp},
                 "shoulder_morning": {"hours": (8, 10), "price": sp},
@@ -87,10 +106,18 @@ class BatteryMPCFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
         return self.async_show_form(
             step_id="tariff",
             data_schema=vol.Schema({
-                vol.Required("valley_price", default=0.085): vol.Coerce(float),
-                vol.Required("shoulder_price", default=0.135): vol.Coerce(float),
-                vol.Required("peak_price", default=0.197): vol.Coerce(float),
-                vol.Required("export_rate", default=0.08): vol.Coerce(float),
+                vol.Required("valley_price", default=0.085): NumberSelector(
+                    NumberSelectorConfig(min=0, max=1, step=0.001, unit_of_measurement="EUR/kWh", mode="box"),
+                ),
+                vol.Required("shoulder_price", default=0.135): NumberSelector(
+                    NumberSelectorConfig(min=0, max=1, step=0.001, unit_of_measurement="EUR/kWh", mode="box"),
+                ),
+                vol.Required("peak_price", default=0.197): NumberSelector(
+                    NumberSelectorConfig(min=0, max=1, step=0.001, unit_of_measurement="EUR/kWh", mode="box"),
+                ),
+                vol.Required("export_rate", default=0.08): NumberSelector(
+                    NumberSelectorConfig(min=0, max=1, step=0.001, unit_of_measurement="EUR/kWh", mode="box"),
+                ),
             }),
         )
 
@@ -107,11 +134,23 @@ class BatteryMPCFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
         return self.async_show_form(
             step_id="sensors",
             data_schema=vol.Schema({
-                vol.Required("soc_sensor_entity_id"): str,
-                vol.Optional("pv_power_entity_id", default=""): str,
-                vol.Optional("load_sensor_entity_id", default=""): str,
-                vol.Required("inverter_type", default="goodwe"): vol.In(
-                    {"goodwe": "GoodWe", "generic": "Generic (switch/number)"}
+                vol.Required("soc_sensor_entity_id"): EntitySelector(
+                    EntitySelectorConfig(domain="sensor", device_class="battery"),
+                ),
+                vol.Optional("pv_power_entity_id"): EntitySelector(
+                    EntitySelectorConfig(domain="sensor", device_class="power"),
+                ),
+                vol.Optional("load_sensor_entity_id"): EntitySelector(
+                    EntitySelectorConfig(domain="sensor", device_class="power"),
+                ),
+                vol.Required("inverter_type", default="goodwe"): SelectSelector(
+                    SelectSelectorConfig(
+                        options=[
+                            {"value": "goodwe", "label": "GoodWe"},
+                            {"value": "generic", "label": "Generic (switch/number)"},
+                        ],
+                        mode=SelectSelectorMode.DROPDOWN,
+                    ),
                 ),
             }),
         )
@@ -129,7 +168,9 @@ class BatteryMPCFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
         return self.async_show_form(
             step_id="inverter_goodwe",
             data_schema=vol.Schema({
-                vol.Required("goodwe_operation_mode_entity_id"): str,
+                vol.Required("goodwe_operation_mode_entity_id"): EntitySelector(
+                    EntitySelectorConfig(domain="select"),
+                ),
             }),
         )
 
@@ -146,8 +187,14 @@ class BatteryMPCFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
         return self.async_show_form(
             step_id="inverter_generic",
             data_schema=vol.Schema({
-                vol.Optional("charge_switch_entity_id", default=""): str,
-                vol.Optional("discharge_switch_entity_id", default=""): str,
-                vol.Optional("charge_power_entity_id", default=""): str,
+                vol.Optional("charge_switch_entity_id"): EntitySelector(
+                    EntitySelectorConfig(domain="switch"),
+                ),
+                vol.Optional("discharge_switch_entity_id"): EntitySelector(
+                    EntitySelectorConfig(domain="switch"),
+                ),
+                vol.Optional("charge_power_entity_id"): EntitySelector(
+                    EntitySelectorConfig(domain="number"),
+                ),
             }),
         )
