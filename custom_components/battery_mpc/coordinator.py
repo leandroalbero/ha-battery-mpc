@@ -246,6 +246,15 @@ class BatteryMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         soc_target_entity = f"number.{prefix}_eco_mode_soc" if prefix else None
         dod_entity = f"number.{prefix}_depth_of_discharge_on_grid" if prefix else None
 
+        # Sync inverter DoD with MPC min_soc so they agree on discharge floor.
+        # MPC min_soc=10% means DoD=90% (inverter uses DoD = 100 - min_soc).
+        if dod_entity and self._entity_exists(dod_entity):
+            target_dod = 100 - self._config.get("min_soc", 10)
+            current_dod = self._get_sensor_value(dod_entity, default=-1)
+            if current_dod != target_dod:
+                LOGGER.info("GoodWe: depth_of_discharge %d%% -> %d%%", current_dod, target_dod)
+                await self._set_number(dod_entity, target_dod)
+
         if action == "charge":
             # Set charge power as % of rated inverter power
             if power_pct_entity and self._entity_exists(power_pct_entity):
