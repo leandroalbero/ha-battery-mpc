@@ -88,8 +88,8 @@ class BatteryMPCFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
             step_id="tariff",
             data_schema=vol.Schema({
                 vol.Required("valley_price", default=0.085): vol.Coerce(float),
-                vol.Required("shoulder_price", default=0.134): vol.Coerce(float),
-                vol.Required("peak_price", default=0.182): vol.Coerce(float),
+                vol.Required("shoulder_price", default=0.135): vol.Coerce(float),
+                vol.Required("peak_price", default=0.197): vol.Coerce(float),
                 vol.Required("export_rate", default=0.08): vol.Coerce(float),
             }),
         )

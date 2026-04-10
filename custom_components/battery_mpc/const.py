@@ -8,14 +8,14 @@ DOMAIN = "battery_mpc"
 # Open-Meteo API
 OPEN_METEO_URL = "https://api.open-meteo.com/v1/forecast"
 
-# Default tariff (Spain 2.0TD)
+# Default tariff (Spain 2.0TD — Octopus Energy rates)
 DEFAULT_TARIFF = {
     "valley": {"hours": (0, 8), "price": 0.085},
-    "shoulder_morning": {"hours": (8, 10), "price": 0.134},
-    "peak_morning": {"hours": (10, 14), "price": 0.182},
-    "shoulder_afternoon": {"hours": (14, 18), "price": 0.134},
-    "peak_evening": {"hours": (18, 22), "price": 0.182},
-    "shoulder_night": {"hours": (22, 24), "price": 0.134},
+    "shoulder_morning": {"hours": (8, 10), "price": 0.135},
+    "peak_morning": {"hours": (10, 14), "price": 0.197},
+    "shoulder_afternoon": {"hours": (14, 18), "price": 0.135},
+    "peak_evening": {"hours": (18, 22), "price": 0.197},
+    "shoulder_night": {"hours": (22, 24), "price": 0.135},
 }
 DEFAULT_EXPORT_RATE = 0.08  # EUR/kWh flat
 
