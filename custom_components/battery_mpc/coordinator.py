@@ -43,16 +43,20 @@ class BatteryMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._solar_forecast: SolarForecast | None = None
         self._load_forecaster = LoadForecaster()
         self._cost_savings_today = 0.0
+        self._cost_actual_today = 0.0
+        self._cost_baseline_today = 0.0
         self._today = None
 
     async def _async_update_data(self) -> dict[str, Any]:
         try:
             now = datetime.now()
 
-            # Reset daily savings counter
+            # Reset daily counters
             if self._today != now.date():
                 self._today = now.date()
                 self._cost_savings_today = 0.0
+                self._cost_actual_today = 0.0
+                self._cost_baseline_today = 0.0
 
             # Refresh solar forecast if stale or missing
             if (
@@ -85,6 +89,27 @@ class BatteryMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             pv_entity = self._config.get("pv_power_entity_id")
             if pv_entity:
                 current_pv_kw = self._get_sensor_value(pv_entity, default=0.0) / 1000.0
+
+            # Calculate cost savings for this 5-min interval.
+            # Actual cost: what we really imported/exported from grid.
+            # Baseline cost: what we'd import without battery (load - solar).
+            grid_import_w = self._get_sensor_value("sensor.import_grid", default=0.0)
+            grid_export_w = self._get_sensor_value("sensor.export_grid", default=0.0)
+
+            tariff = self._config.get("tariff", DEFAULT_TARIFF)
+            export_rate = self._config.get("export_rate", DEFAULT_EXPORT_RATE)
+            current_rate = self._get_current_rate(now.hour, tariff)
+            interval_hours = MPC_UPDATE_INTERVAL_MINUTES / 60.0
+
+            actual_cost = (grid_import_w / 1000.0 * current_rate
+                           - grid_export_w / 1000.0 * export_rate) * interval_hours
+            # Baseline: no battery, all net load from grid
+            net_load_w = max(0, current_load_kw * 1000 - current_pv_kw * 1000)
+            baseline_cost = (net_load_w / 1000.0 * current_rate) * interval_hours
+
+            self._cost_actual_today += actual_cost
+            self._cost_baseline_today += baseline_cost
+            self._cost_savings_today = self._cost_baseline_today - self._cost_actual_today
 
             # Build forecast arrays
             n_steps = MPC_HORIZON_HOURS * 60 // MPC_STEP_MINUTES
@@ -154,7 +179,9 @@ class BatteryMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "current_soc": round(current_soc_pct, 1),
                 "forecast_pv_power": round(solar_fc[0] * 1000),
                 "forecast_load": round(load_fc[0] * 1000),
-                "cost_savings_today": round(self._cost_savings_today, 2),
+                "cost_savings_today": round(self._cost_savings_today, 3),
+                "cost_actual_today": round(self._cost_actual_today, 3),
+                "cost_baseline_today": round(self._cost_baseline_today, 3),
                 "solve_time_ms": round(result.solve_time_ms, 1),
                 "horizon_hours": MPC_HORIZON_HOURS,
                 "schedule": schedule,
@@ -163,6 +190,15 @@ class BatteryMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         except Exception as err:
             raise UpdateFailed(f"MPC optimization failed: {err}") from err
+
+    @staticmethod
+    def _get_current_rate(hour: int, tariff: dict) -> float:
+        """Get the import rate for the current hour from tariff config."""
+        for slot in tariff.values():
+            start_h, end_h = slot["hours"]
+            if start_h <= hour < end_h:
+                return slot["price"]
+        return 0.1  # fallback
 
     def _get_sensor_value(self, entity_id: str, default: float = 0.0) -> float:
         """Read a numeric sensor value from HA state."""
