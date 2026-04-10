@@ -61,9 +61,18 @@ def solve_mpc(
 
     All power values in kW, energy in kWh, prices in EUR/kWh.
     """
-    from scipy.optimize import linprog
-    from scipy.sparse import diags, hstack, vstack
-    from scipy.sparse import eye as speye
+    try:
+        from scipy.optimize import linprog
+        from scipy.sparse import diags, hstack, vstack
+        from scipy.sparse import eye as speye
+    except ImportError:
+        return MpcResult(
+            success=False, solve_time_ms=0, total_cost=0,
+            charge=np.zeros(n), discharge=np.zeros(n),
+            grid_import=np.zeros(n), grid_export=np.zeros(n),
+            soc=np.full(n, current_soc_kwh),
+            next_action="idle", next_power_w=0,
+        )
 
     t0 = time.monotonic()
 
