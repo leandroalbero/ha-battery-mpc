@@ -11,18 +11,21 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
+from homeassistant.util import dt as dt_util
 
 from .const import (
     DEFAULT_EXPORT_RATE,
     DEFAULT_TARIFF,
     DOMAIN,
     FORECAST_REFRESH_MINUTES,
+    LOAD_HISTORY_DAYS,
     LOGGER,
     MPC_HORIZON_HOURS,
     MPC_STEP_MINUTES,
     MPC_UPDATE_INTERVAL_MINUTES,
 )
 from .forecast import LoadForecaster, SolarForecast, fetch_solar_forecast
+from .pid import PowerPI
 from .solver import solve_mpc
 
 
@@ -47,6 +50,11 @@ class BatteryMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._cost_baseline_today = 0.0
         self._cost_savings_lifetime = 0.0
         self._today = None
+        self._load_profile_updated = False
+        self._power_pi = PowerPI(
+            rated_power_w=self._config.get("inverter_rated_power_kw", 4.8) * 1000,
+        )
+        self._last_action: str = "idle"
 
     async def _async_update_data(self) -> dict[str, Any]:
         try:
@@ -58,6 +66,12 @@ class BatteryMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 self._cost_savings_today = 0.0
                 self._cost_actual_today = 0.0
                 self._cost_baseline_today = 0.0
+                self._load_profile_updated = False
+
+            # Update load profile from recorder history (on startup + daily)
+            if not self._load_profile_updated:
+                await self._update_load_profile()
+                self._load_profile_updated = True
 
             # Refresh solar forecast if stale or missing
             if (
@@ -208,6 +222,55 @@ class BatteryMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         except Exception as err:
             raise UpdateFailed(f"MPC optimization failed: {err}") from err
 
+    async def _update_load_profile(self) -> None:
+        """Fetch recent load sensor history from HA recorder to build hourly profile."""
+        load_entity = self._config.get("load_sensor_entity_id")
+        if not load_entity:
+            return
+
+        try:
+            from homeassistant.components.recorder import get_instance
+            from homeassistant.components.recorder.history import get_significant_states
+        except ImportError:
+            LOGGER.debug("Recorder not available, using default load profile")
+            return
+
+        end = dt_util.utcnow()
+        start = end - timedelta(days=LOAD_HISTORY_DAYS)
+
+        try:
+            states_dict = await get_instance(self.hass).async_add_executor_job(
+                get_significant_states,
+                self.hass,
+                start,
+                end,
+                [load_entity],
+            )
+        except Exception as err:
+            LOGGER.warning("Failed to fetch load history: %s", err)
+            return
+
+        entity_states = states_dict.get(load_entity, [])
+        history: list[tuple[datetime, float]] = []
+        for state in entity_states:
+            if state.state in ("unknown", "unavailable"):
+                continue
+            try:
+                value_kw = float(state.state) / 1000.0  # sensor reports W
+                local_time = dt_util.as_local(state.last_changed)
+                history.append((local_time, value_kw))
+            except (ValueError, TypeError):
+                continue
+
+        if history:
+            self._load_forecaster.update_profile(history)
+            LOGGER.info(
+                "Load profile updated from %d readings (%d days)",
+                len(history), LOAD_HISTORY_DAYS,
+            )
+        else:
+            LOGGER.debug("No load history available yet, using defaults")
+
     @staticmethod
     def _get_current_rate(hour: int, tariff: dict) -> float:
         """Get the import rate for the current hour from tariff config."""
@@ -268,14 +331,9 @@ class BatteryMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 await self._set_number(dod_entity, target_dod)
 
         if action == "charge":
-            # Set charge power as % of inverter rated power
-            # NOTE: eco_mode_power is % of INVERTER rated power, not battery max charge
             if power_pct_entity and self._entity_exists(power_pct_entity):
-                rated_w = self._config.get("inverter_rated_power_kw", 4.8) * 1000
-
                 # Safety: leave headroom for house consumption so we don't
                 # exceed the contracted grid import limit (5.5 kW typical).
-                # charge_power + house_load <= grid_limit
                 grid_limit_w = self._config.get("max_grid_import_kw", 5.5) * 1000
                 load_entity = self._config.get("load_sensor_entity_id")
                 current_load_w = 0.0
@@ -285,14 +343,27 @@ class BatteryMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     current_load_w = 1500.0  # safe default
                 safe_charge_w = max(0, min(power_w, grid_limit_w - current_load_w))
 
-                target_pct = min(100, max(1, round(safe_charge_w / rated_w * 100)))
+                # Read actual battery charge power for PI feedback
+                actual_charge_w: float | None = None
+                batt_entity = self._config.get("battery_power_entity_id")
+                if batt_entity and self._last_action == "charge":
+                    raw = self._get_sensor_value(batt_entity, default=float("nan"))
+                    if not (raw != raw):  # not NaN
+                        # GoodWe: negative = charging. We want charge rate as positive.
+                        actual_charge_w = abs(raw)
+
+                # PI controller computes corrected eco_mode_power %
+                target_pct = self._power_pi.compute(safe_charge_w, actual_charge_w)
+
                 current_pct = self._get_sensor_value(power_pct_entity, default=-1)
                 if current_pct != target_pct:
                     LOGGER.info(
                         "GoodWe: eco_mode_power %d%% -> %d%% "
-                        "(LP=%.0fW, safe=%.0fW, load=%.0fW, grid_limit=%.0fW)",
+                        "(LP=%.0fW, safe=%.0fW, actual=%s, load=%.0fW)",
                         current_pct, target_pct,
-                        power_w, safe_charge_w, current_load_w, grid_limit_w,
+                        power_w, safe_charge_w,
+                        f"{actual_charge_w:.0f}W" if actual_charge_w is not None else "n/a",
+                        current_load_w,
                     )
                     await self._set_number(power_pct_entity, target_pct)
 
@@ -304,7 +375,12 @@ class BatteryMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
             target_mode = "eco_charge"
         else:
+            # Reset PI when leaving charge mode
+            if self._last_action == "charge":
+                self._power_pi.reset()
             target_mode = "general"
+
+        self._last_action = action
 
         # Only send mode command if it actually needs to change
         current_state = self.hass.states.get(mode_entity)

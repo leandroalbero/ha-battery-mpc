@@ -40,6 +40,7 @@
           "soc_sensor_entity_id": "Battery SoC Sensor",
           "pv_power_entity_id": "PV Power Sensor (optional)",
           "load_sensor_entity_id": "House Consumption Sensor (optional)",
+          "battery_power_entity_id": "Battery Power Sensor (optional, enables PI correction)",
           "inverter_type": "Inverter Type"
         }
       },
@@ -83,6 +84,7 @@
           "soc_sensor_entity_id": "Battery SoC Sensor",
           "pv_power_entity_id": "PV Power Sensor",
           "load_sensor_entity_id": "House Consumption Sensor",
+          "battery_power_entity_id": "Battery Power Sensor (PI correction)",
           "goodwe_operation_mode_entity_id": "GoodWe Operation Mode",
           "goodwe_eco_mode_power_entity_id": "GoodWe Eco Mode Power",
           "goodwe_eco_mode_soc_entity_id": "GoodWe Eco Mode SoC",

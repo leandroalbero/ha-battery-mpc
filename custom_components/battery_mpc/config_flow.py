@@ -110,6 +110,9 @@ class BatteryMPCFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
                 vol.Optional("load_sensor_entity_id"): EntitySelector(
                     EntitySelectorConfig(domain="sensor"),
                 ),
+                vol.Optional("battery_power_entity_id"): EntitySelector(
+                    EntitySelectorConfig(domain="sensor"),
+                ),
                 vol.Required("inverter_type", default="goodwe"): vol.In(
                     {"goodwe": "GoodWe", "generic": "Generic"},
                 ),
@@ -243,6 +246,9 @@ class BatteryMPCOptionsFlowHandler(config_entries.OptionsFlow):
                     EntitySelectorConfig(domain="sensor"),
                 ),
                 vol.Optional("load_sensor_entity_id", default=d.get("load_sensor_entity_id", "")): EntitySelector(
+                    EntitySelectorConfig(domain="sensor"),
+                ),
+                vol.Optional("battery_power_entity_id", default=d.get("battery_power_entity_id", "")): EntitySelector(
                     EntitySelectorConfig(domain="sensor"),
                 ),
                 # GoodWe entities
