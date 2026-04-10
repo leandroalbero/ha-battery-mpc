@@ -7,6 +7,7 @@ by optimally timing battery charge/discharge based on time-of-use tariffs.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
@@ -25,15 +26,13 @@ class BatteryMPCData:
     coordinator: BatteryMPCCoordinator
 
 
-type BatteryMPCConfigEntry = ConfigEntry[BatteryMPCData]
-
-
-async def async_setup_entry(hass: HomeAssistant, entry: BatteryMPCConfigEntry) -> bool:
+async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Battery MPC from a config entry."""
     coordinator = BatteryMPCCoordinator(hass, entry)
 
-    # Store coordinator in runtime data
-    entry.runtime_data = BatteryMPCData(coordinator=coordinator)
+    # Store coordinator in hass.data (compatible with all HA versions)
+    hass.data.setdefault(DOMAIN, {})
+    hass.data[DOMAIN][entry.entry_id] = BatteryMPCData(coordinator=coordinator)
 
     # First refresh — fetches forecast + runs MPC
     await coordinator.async_config_entry_first_refresh()
@@ -53,9 +52,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: BatteryMPCConfigEntry) -
     return True
 
 
-async def async_unload_entry(hass: HomeAssistant, entry: BatteryMPCConfigEntry) -> bool:
+async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload Battery MPC config entry."""
-    return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    if unload_ok:
+        hass.data[DOMAIN].pop(entry.entry_id)
+    return unload_ok
 
 
 async def _async_reload_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:

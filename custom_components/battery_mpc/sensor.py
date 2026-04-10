@@ -14,6 +14,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
+from .const import DOMAIN
 from .coordinator import BatteryMPCCoordinator
 from .entity import BatteryMPCEntity
 
@@ -88,7 +89,8 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up Battery MPC sensors from a config entry."""
-    coordinator: BatteryMPCCoordinator = entry.runtime_data.coordinator
+    data = hass.data[DOMAIN][entry.entry_id]
+    coordinator: BatteryMPCCoordinator = data.coordinator
     async_add_entities(
         BatteryMPCSensor(coordinator=coordinator, entity_description=desc)
         for desc in SENSOR_DESCRIPTIONS
