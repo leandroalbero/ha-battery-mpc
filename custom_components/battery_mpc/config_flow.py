@@ -50,11 +50,11 @@ class BatteryMPCFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
                 vol.Required("shoulder_price", default=0.135): vol.Coerce(float),
                 vol.Required("peak_price", default=0.197): vol.Coerce(float),
                 vol.Required("export_rate", default=0.08): vol.Coerce(float),
-                vol.Required("soc_sensor_entity_id", default="sensor.battery_state_of_charge"): str,
-                vol.Optional("pv_power_entity_id", default="sensor.pv_power"): str,
-                vol.Optional("load_sensor_entity_id", default="sensor.house_consumption"): str,
+                vol.Required("soc_sensor_entity_id"): str,
+                vol.Optional("pv_power_entity_id", default=""): str,
+                vol.Optional("load_sensor_entity_id", default=""): str,
                 vol.Required("inverter_type", default="goodwe"): vol.In({"goodwe": "GoodWe", "generic": "Generic"}),
-                vol.Required("goodwe_operation_mode_entity_id", default="select.goodwe_inverter_operation_mode"): str,
+                vol.Required("goodwe_operation_mode_entity_id", default=""): str,
             }),
         )
 
