@@ -3,7 +3,7 @@
     "step": {
       "user": {
         "title": "Solar Location",
-        "description": "Enter your location for solar irradiance forecasts from Open-Meteo. API key is optional (free tier: 10,000 calls/day).",
+        "description": "Enter your location for Open-Meteo solar forecasts. API key is optional (free tier: 10,000 calls/day).",
         "data": {
           "latitude": "Latitude",
           "longitude": "Longitude",
@@ -11,29 +11,30 @@
         }
       },
       "battery": {
-        "title": "Battery Specifications",
-        "description": "Configure your battery system parameters.",
+        "title": "Battery & Grid",
+        "description": "Configure your battery system and grid connection.",
         "data": {
-          "battery_capacity_kwh": "Battery Capacity",
-          "max_charge_kw": "Max Charge Rate",
-          "max_discharge_kw": "Max Discharge Rate",
-          "min_soc": "Minimum State of Charge",
-          "efficiency": "Round-trip Efficiency"
+          "battery_capacity_kwh": "Battery Capacity (kWh)",
+          "max_charge_kw": "Max Charge Rate (kW)",
+          "max_discharge_kw": "Max Discharge Rate (kW)",
+          "min_soc": "Minimum SoC (%)",
+          "efficiency": "Round-trip Efficiency (%)",
+          "max_grid_import_kw": "Contracted Grid Import Limit (kW)"
         }
       },
       "tariff": {
         "title": "Electricity Tariff",
-        "description": "Set your import prices for each period. Uses Spain 2.0TD time bands: Valley 00-08, Shoulder 08-10 + 14-18 + 22-24, Peak 10-14 + 18-22.",
+        "description": "Spain 2.0TD time bands: Valley 00-08, Shoulder 08-10 + 14-18 + 22-24, Peak 10-14 + 18-22.",
         "data": {
-          "valley_price": "Valley Price (00:00-08:00)",
-          "shoulder_price": "Shoulder Price",
-          "peak_price": "Peak Price",
-          "export_rate": "Export Rate"
+          "valley_price": "Valley Price (EUR/kWh)",
+          "shoulder_price": "Shoulder Price (EUR/kWh)",
+          "peak_price": "Peak Price (EUR/kWh)",
+          "export_rate": "Export Rate (EUR/kWh)"
         }
       },
       "sensors": {
-        "title": "Sensors & Inverter Type",
-        "description": "Select your battery SoC sensor and inverter type.",
+        "title": "Sensors",
+        "description": "Select your battery and energy monitoring sensors.",
         "data": {
           "soc_sensor_entity_id": "Battery SoC Sensor",
           "pv_power_entity_id": "PV Power Sensor (optional)",
@@ -43,9 +44,12 @@
       },
       "inverter_goodwe": {
         "title": "GoodWe Inverter",
-        "description": "Select the GoodWe operation mode entity.",
+        "description": "Entity IDs are auto-detected. Verify and adjust if needed.",
         "data": {
-          "goodwe_operation_mode_entity_id": "GoodWe Operation Mode"
+          "goodwe_operation_mode_entity_id": "Operation Mode",
+          "goodwe_eco_mode_power_entity_id": "Eco Mode Power (%)",
+          "goodwe_eco_mode_soc_entity_id": "Eco Mode Target SoC",
+          "goodwe_dod_entity_id": "Depth of Discharge"
         }
       },
       "inverter_generic": {
@@ -57,31 +61,31 @@
           "charge_power_entity_id": "Charge Power Number Entity"
         }
       }
-    },
-    "error": {
-      "cannot_connect": "Failed to connect to Open-Meteo",
-      "unknown": "Unknown error occurred"
     }
   },
   "options": {
     "step": {
       "init": {
         "title": "Battery MPC Settings",
-        "description": "Edit battery, tariff, sensor, and inverter settings. Changes take effect immediately.",
+        "description": "Edit all settings. Changes take effect immediately.",
         "data": {
-          "battery_capacity_kwh": "Battery Capacity",
-          "max_charge_kw": "Max Charge Rate",
-          "max_discharge_kw": "Max Discharge Rate",
-          "min_soc": "Minimum State of Charge",
-          "efficiency": "Round-trip Efficiency",
-          "valley_price": "Valley Price (00:00-08:00)",
-          "shoulder_price": "Shoulder Price",
-          "peak_price": "Peak Price",
-          "export_rate": "Export Rate",
+          "battery_capacity_kwh": "Battery Capacity (kWh)",
+          "max_charge_kw": "Max Charge Rate (kW)",
+          "max_discharge_kw": "Max Discharge Rate (kW)",
+          "min_soc": "Minimum SoC (%)",
+          "efficiency": "Round-trip Efficiency (%)",
+          "max_grid_import_kw": "Grid Import Limit (kW)",
+          "valley_price": "Valley Price (EUR/kWh)",
+          "shoulder_price": "Shoulder Price (EUR/kWh)",
+          "peak_price": "Peak Price (EUR/kWh)",
+          "export_rate": "Export Rate (EUR/kWh)",
           "soc_sensor_entity_id": "Battery SoC Sensor",
           "pv_power_entity_id": "PV Power Sensor",
           "load_sensor_entity_id": "House Consumption Sensor",
-          "goodwe_operation_mode_entity_id": "GoodWe Operation Mode"
+          "goodwe_operation_mode_entity_id": "GoodWe Operation Mode",
+          "goodwe_eco_mode_power_entity_id": "GoodWe Eco Mode Power",
+          "goodwe_eco_mode_soc_entity_id": "GoodWe Eco Mode SoC",
+          "goodwe_dod_entity_id": "GoodWe Depth of Discharge"
         }
       }
     }

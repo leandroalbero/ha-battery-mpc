@@ -253,12 +253,10 @@ class BatteryMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             LOGGER.warning("GoodWe operation mode entity not configured")
             return
 
-        # Auto-discover sibling GoodWe entities from the mode entity prefix
-        # e.g., select.goodwe_inverter_operation_mode -> "goodwe"
-        prefix = self._find_goodwe_prefix()
-        power_pct_entity = f"number.{prefix}_eco_mode_power" if prefix else None
-        soc_target_entity = f"number.{prefix}_eco_mode_soc" if prefix else None
-        dod_entity = f"number.{prefix}_depth_of_discharge_on_grid" if prefix else None
+        # Use explicitly configured GoodWe entities (no auto-discovery)
+        power_pct_entity = self._config.get("goodwe_eco_mode_power_entity_id")
+        soc_target_entity = self._config.get("goodwe_eco_mode_soc_entity_id")
+        dod_entity = self._config.get("goodwe_dod_entity_id")
 
         # Sync inverter DoD with MPC min_soc so they agree on discharge floor.
         # MPC min_soc=10% means DoD=90% (inverter uses DoD = 100 - min_soc).
@@ -325,17 +323,6 @@ class BatteryMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             )
         except Exception as err:
             LOGGER.error("Failed to set GoodWe mode: %s", err)
-
-    def _find_goodwe_prefix(self) -> str | None:
-        """Extract the GoodWe entity prefix (e.g., 'goodwe') from the mode entity."""
-        mode_entity = self._config.get("goodwe_operation_mode_entity_id", "")
-        # select.goodwe_inverter_operation_mode -> goodwe
-        name = mode_entity.replace("select.", "")
-        if "_inverter_operation_mode" in name:
-            return name.replace("_inverter_operation_mode", "")
-        # Fallback: try everything before the last known suffix
-        parts = name.rsplit("_", 3)
-        return parts[0] if parts else None
 
     def _entity_exists(self, entity_id: str) -> bool:
         """Check if an entity exists in HA."""
