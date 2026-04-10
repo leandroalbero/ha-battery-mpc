@@ -271,7 +271,7 @@ class BatteryMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # Set charge power as % of inverter rated power
             # NOTE: eco_mode_power is % of INVERTER rated power, not battery max charge
             if power_pct_entity and self._entity_exists(power_pct_entity):
-                rated_w = self._config.get("inverter_rated_power_kw", 4.6) * 1000
+                rated_w = self._config.get("inverter_rated_power_kw", 4.8) * 1000
 
                 # Safety: leave headroom for house consumption so we don't
                 # exceed the contracted grid import limit (5.5 kW typical).

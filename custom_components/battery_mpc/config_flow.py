@@ -55,7 +55,7 @@ class BatteryMPCFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
                 vol.Required("min_soc", default=10): vol.Coerce(int),
                 vol.Required("efficiency", default=95): vol.Coerce(int),
                 vol.Required("max_grid_import_kw", default=5.5): vol.Coerce(float),
-                vol.Required("inverter_rated_power_kw", default=4.6): vol.Coerce(float),
+                vol.Required("inverter_rated_power_kw", default=4.8): vol.Coerce(float),
             }),
         )
 
