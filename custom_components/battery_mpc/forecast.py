@@ -130,28 +130,30 @@ async def fetch_solar_forecast(
 
 
 class LoadForecaster:
-    """Simple load forecast based on historical hourly averages.
+    """Load forecast based on historical hourly averages, split by weekday/weekend.
 
     In production, this uses the actual HA sensor history. For initial setup,
     uses a flat default.
     """
 
-    def __init__(self, hourly_profile: dict[int, float] | None = None) -> None:
-        # Default: ~1.4 kW average house load
-        self._profile = hourly_profile or {h: 1.4 for h in range(24)}
+    def __init__(self) -> None:
+        # Default: ~1.4 kW average house load, keyed by (hour, is_weekend)
+        self._profile: dict[tuple[int, bool], float] = {
+            (h, w): 1.4 for h in range(24) for w in (False, True)
+        }
 
     def update_profile(self, history: list[tuple[datetime, float]]) -> None:
         """Update load profile from HA sensor history."""
         if not history:
             return
-        sums: dict[int, float] = {}
-        counts: dict[int, int] = {}
+        sums: dict[tuple[int, bool], float] = {}
+        counts: dict[tuple[int, bool], int] = {}
         for ts, value in history:
-            h = ts.hour
-            sums[h] = sums.get(h, 0.0) + value
-            counts[h] = counts.get(h, 0) + 1
-        for h in sums:
-            self._profile[h] = sums[h] / counts[h]
+            key = (ts.hour, ts.weekday() >= 5)
+            sums[key] = sums.get(key, 0.0) + value
+            counts[key] = counts.get(key, 0) + 1
+        for key in sums:
+            self._profile[key] = sums[key] / counts[key]
 
     def forecast(
         self,
@@ -163,5 +165,6 @@ class LoadForecaster:
         result = np.zeros(steps)
         for i in range(steps):
             ts = start + timedelta(minutes=i * step_minutes)
-            result[i] = self._profile.get(ts.hour, 1.4)
+            key = (ts.hour, ts.weekday() >= 5)
+            result[i] = self._profile.get(key, 1.4)
         return result

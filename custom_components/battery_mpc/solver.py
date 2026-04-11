@@ -134,14 +134,27 @@ def _solve_lp(
     return x, float(c @ x), False
 
 
-def build_import_rates(hours: np.ndarray, tariff_schedule: dict) -> np.ndarray:
-    """Map hour-of-day array to import rates using tariff schedule."""
+def build_import_rates(
+    hours: np.ndarray,
+    tariff_schedule: dict,
+    is_weekend: np.ndarray | None = None,
+) -> np.ndarray:
+    """Map hour-of-day array to import rates using tariff schedule.
+
+    Spain 2.0TD: weekends and public holidays are flat valley rate all day.
+    """
     rates = np.zeros(len(hours))
+    valley_price = min(slot["price"] for slot in tariff_schedule.values())
     for slot in tariff_schedule.values():
         start_h, end_h = slot["hours"]
         price = slot["price"]
         mask = (hours >= start_h) & (hours < end_h)
         rates[mask] = price
+
+    # Weekends: flat valley rate
+    if is_weekend is not None:
+        rates[is_weekend] = valley_price
+
     return rates
 
 
@@ -160,6 +173,7 @@ def solve_mpc(
     min_soc_frac: float,
     max_grid_import: float = 5.5,
     max_grid_export: float = 5.5,
+    is_weekend: np.ndarray | None = None,
 ) -> MpcResult:
     """Solve the MPC LP for optimal battery scheduling."""
     t0 = time.monotonic()
@@ -174,7 +188,7 @@ def solve_mpc(
             next_action="idle", next_power_w=0,
         )
 
-    import_rates = build_import_rates(hours, tariff_schedule)
+    import_rates = build_import_rates(hours, tariff_schedule, is_weekend)
     export_rates = np.full(n, export_rate)
     dt = dt_hours
 

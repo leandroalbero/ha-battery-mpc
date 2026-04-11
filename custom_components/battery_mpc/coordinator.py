@@ -127,7 +127,7 @@ class BatteryMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
             tariff = self._config.get("tariff", DEFAULT_TARIFF)
             export_rate = self._config.get("export_rate", DEFAULT_EXPORT_RATE)
-            current_rate = self._get_current_rate(now.hour, tariff)
+            current_rate = self._get_current_rate(now.hour, tariff, now.weekday())
             interval_hours = MPC_UPDATE_INTERVAL_MINUTES / 60.0
 
             actual_cost = (grid_import_w / 1000.0 * current_rate
@@ -151,15 +151,15 @@ class BatteryMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 solar_fc[0] = current_pv_kw
                 load_fc[0] = current_load_kw
 
-            hours = np.array([
-                (now + timedelta(minutes=i * MPC_STEP_MINUTES)).hour
-                for i in range(n_steps)
-            ])
+            step_times = [now + timedelta(minutes=i * MPC_STEP_MINUTES) for i in range(n_steps)]
+            hours = np.array([t.hour for t in step_times])
+            # Spain 2.0TD: weekends are flat valley rate all day
+            is_weekend = np.array([t.weekday() >= 5 for t in step_times])
 
             tariff = self._config.get("tariff", DEFAULT_TARIFF)
             export_rate = self._config.get("export_rate", DEFAULT_EXPORT_RATE)
 
-            # Solve MPC in executor thread (scipy is blocking)
+            # Solve MPC in executor thread
             result = await self.hass.async_add_executor_job(
                 partial(
                     solve_mpc,
@@ -177,6 +177,7 @@ class BatteryMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     min_soc_frac=self._config["min_soc"] / 100.0,
                     max_grid_import=self._config.get("max_grid_import_kw", 5.0),
                     max_grid_export=self._config.get("max_grid_export_kw", 5.0),
+                    is_weekend=is_weekend,
                 )
             )
 
@@ -272,8 +273,13 @@ class BatteryMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             LOGGER.debug("No load history available yet, using defaults")
 
     @staticmethod
-    def _get_current_rate(hour: int, tariff: dict) -> float:
-        """Get the import rate for the current hour from tariff config."""
+    def _get_current_rate(hour: int, tariff: dict, weekday: int = 0) -> float:
+        """Get the import rate for the current hour from tariff config.
+
+        Spain 2.0TD: weekends (weekday >= 5) are flat valley rate all day.
+        """
+        if weekday >= 5:
+            return min(slot["price"] for slot in tariff.values())
         for slot in tariff.values():
             start_h, end_h = slot["hours"]
             if start_h <= hour < end_h:
