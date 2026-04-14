@@ -180,6 +180,11 @@ class BatteryMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # Spain 2.0TD: weekends are flat valley rate all day
             is_weekend = np.array([t.weekday() >= 5 for t in step_times])
 
+            # Remaining solar production forecast for today (kWh)
+            dt_h = MPC_STEP_MINUTES / 60.0
+            today_mask = np.array([t.date() == now.date() for t in step_times])
+            solar_remaining_kwh = float(np.sum(solar_fc[today_mask])) * dt_h
+
             tariff = self._config.get("tariff", DEFAULT_TARIFF)
             export_rate = self._config.get("export_rate", DEFAULT_EXPORT_RATE)
 
@@ -246,6 +251,7 @@ class BatteryMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "horizon_hours": MPC_HORIZON_HOURS,
                 "schedule": schedule,
                 "forecast_age_min": round(self._solar_forecast.age_minutes, 1),
+                "solar_remaining_today_kwh": round(solar_remaining_kwh, 2),
             }
 
         except Exception as err:

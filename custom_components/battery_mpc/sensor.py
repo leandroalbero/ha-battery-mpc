@@ -81,6 +81,14 @@ SENSOR_DESCRIPTIONS = (
         icon="mdi:clock-outline",
         entity_registry_enabled_default=False,
     ),
+    SensorEntityDescription(
+        key="solar_remaining_today_kwh",
+        name="Solar Remaining Today",
+        native_unit_of_measurement="kWh",
+        device_class=SensorDeviceClass.ENERGY,
+        state_class=SensorStateClass.MEASUREMENT,
+        icon="mdi:solar-power-variant",
+    ),
 )
 
 LIFETIME_DESCRIPTION = SensorEntityDescription(

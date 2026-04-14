@@ -1,7 +1,7 @@
 {
   "domain": "battery_mpc",
   "name": "Battery MPC Controller",
-  "version": "2.5.0",
+  "version": "2.6.0",
   "codeowners": ["@leandroalbero"],
   "config_flow": true,
   "documentation": "https://github.com/leandroalbero/ha-battery-mpc",
