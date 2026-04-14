@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta
 from functools import partial
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -15,6 +17,7 @@ from homeassistant.util import dt as dt_util
 
 from .const import (
     DEFAULT_EXPORT_RATE,
+    DEFAULT_MONTHLY_FACTORS,
     DEFAULT_TARIFF,
     DOMAIN,
     FORECAST_REFRESH_MINUTES,
@@ -23,6 +26,8 @@ from .const import (
     MPC_HORIZON_HOURS,
     MPC_STEP_MINUTES,
     MPC_UPDATE_INTERVAL_MINUTES,
+    SOLAR_CALIBRATION_FILE,
+    SOLAR_EMA_ALPHA,
 )
 from .forecast import LoadForecaster, SolarForecast, fetch_solar_forecast
 from .pid import PowerPI
@@ -55,6 +60,12 @@ class BatteryMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             rated_power_w=self._config.get("inverter_rated_power_kw", 4.8) * 1000,
         )
         self._last_action: str = "idle"
+        # Solar calibration: accumulate actual vs predicted PV each cycle,
+        # update monthly correction factor at end of day.
+        self._solar_actual_wh: float = 0.0
+        self._solar_predicted_wh: float = 0.0
+        self._learned_monthly_factors: dict[int, float] = dict(DEFAULT_MONTHLY_FACTORS)
+        self._load_solar_calibration()
 
     async def _async_update_data(self) -> dict[str, Any]:
         try:
@@ -62,11 +73,16 @@ class BatteryMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
             # Reset daily counters
             if self._today != now.date():
+                # End-of-day: update solar calibration from today's accumulation
+                if self._solar_predicted_wh > 100:
+                    self._update_solar_calibration(self._today or now.date())
                 self._today = now.date()
                 self._cost_savings_today = 0.0
                 self._cost_actual_today = 0.0
                 self._cost_baseline_today = 0.0
                 self._load_profile_updated = False
+                self._solar_actual_wh = 0.0
+                self._solar_predicted_wh = 0.0
 
             # Update load profile from recorder history (on startup + daily)
             if not self._load_profile_updated:
@@ -85,6 +101,7 @@ class BatteryMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         self._config["latitude"],
                         self._config["longitude"],
                         api_key=self._config.get("open_meteo_api_key"),
+                        monthly_factors=self._learned_monthly_factors,
                     )
                     # Only replace if we got actual data
                     if new_forecast and len(new_forecast._timestamps) > 0:
@@ -140,6 +157,13 @@ class BatteryMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._cost_baseline_today += baseline_cost
             self._cost_savings_today = self._cost_baseline_today - self._cost_actual_today
             self._cost_savings_lifetime += baseline_cost - actual_cost
+
+            # Accumulate actual vs predicted PV for solar calibration.
+            # Only during daylight (PV > 50W) to avoid noise at dawn/dusk.
+            if current_pv_kw > 0.05 and self._solar_forecast is not None:
+                predicted_kw = self._solar_forecast.get_pv_forecast(now, 1, MPC_STEP_MINUTES)[0]
+                self._solar_actual_wh += current_pv_kw * 1000 * interval_hours
+                self._solar_predicted_wh += predicted_kw * 1000 * interval_hours
 
             # Build forecast arrays
             n_steps = MPC_HORIZON_HOURS * 60 // MPC_STEP_MINUTES
@@ -496,3 +520,56 @@ class BatteryMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     {"entity_id": discharge_entity},
                     blocking=True,
                 )
+
+    # --- Solar calibration ---
+
+    def _calibration_path(self) -> Path:
+        return Path(self.hass.config.path(".storage")) / SOLAR_CALIBRATION_FILE
+
+    def _load_solar_calibration(self) -> None:
+        """Load learned monthly factors from disk."""
+        path = self._calibration_path()
+        if not path.exists():
+            return
+        try:
+            data = json.loads(path.read_text())
+            for k, v in data.items():
+                self._learned_monthly_factors[int(k)] = float(v)
+            LOGGER.info("Loaded solar calibration: %s", self._learned_monthly_factors)
+        except Exception as err:
+            LOGGER.warning("Failed to load solar calibration: %s", err)
+
+    def _save_solar_calibration(self) -> None:
+        """Persist learned monthly factors to disk."""
+        path = self._calibration_path()
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(
+                {str(k): round(v, 4) for k, v in self._learned_monthly_factors.items()},
+            ))
+        except Exception as err:
+            LOGGER.warning("Failed to save solar calibration: %s", err)
+
+    def _update_solar_calibration(self, day: "datetime | Any") -> None:
+        """Update the monthly correction factor from today's actual vs predicted."""
+        if self._solar_predicted_wh < 100:
+            return
+
+        ratio = self._solar_actual_wh / self._solar_predicted_wh
+        month = day.month if hasattr(day, "month") else datetime.now().month
+        old_factor = self._learned_monthly_factors.get(month, 1.0)
+
+        # EMA blend: new = alpha * observation + (1-alpha) * old
+        alpha = SOLAR_EMA_ALPHA
+        new_factor = alpha * ratio * old_factor + (1 - alpha) * old_factor
+        new_factor = max(0.3, min(2.5, new_factor))
+
+        LOGGER.info(
+            "Solar calibration month=%d: actual=%.0fWh predicted=%.0fWh "
+            "ratio=%.3f old_factor=%.3f -> new_factor=%.3f",
+            month, self._solar_actual_wh, self._solar_predicted_wh,
+            ratio, old_factor, new_factor,
+        )
+
+        self._learned_monthly_factors[month] = new_factor
+        self._save_solar_calibration()

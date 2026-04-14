@@ -28,6 +28,10 @@ DEFAULT_MONTHLY_FACTORS = {
     7: 0.87, 8: 0.94, 9: 0.97, 10: 1.22, 11: 1.41, 12: 1.45,
 }
 
+# Solar calibration
+SOLAR_CALIBRATION_FILE = "battery_mpc_solar_factors.json"
+SOLAR_EMA_ALPHA = 0.3  # weight of new day's observation vs stored factor
+
 # MPC defaults
 MPC_HORIZON_HOURS = 24
 MPC_STEP_MINUTES = 5

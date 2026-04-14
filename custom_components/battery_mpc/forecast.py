@@ -86,6 +86,7 @@ async def fetch_solar_forecast(
     longitude: float,
     forecast_days: int = 2,
     api_key: str | None = None,
+    monthly_factors: dict[int, float] | None = None,
 ) -> SolarForecast:
     """Fetch solar irradiance forecast from Open-Meteo API."""
     # Use commercial endpoint if API key provided, otherwise free tier
@@ -122,11 +123,11 @@ async def fetch_solar_forecast(
             max(ghi_values) if ghi_values else 0,
         )
 
-        return SolarForecast(timestamps, ghi_values)
+        return SolarForecast(timestamps, ghi_values, monthly_factors=monthly_factors)
 
     except Exception as err:
         LOGGER.error("Failed to fetch solar forecast: %s", err)
-        return SolarForecast([], [])
+        return SolarForecast([], [], monthly_factors=monthly_factors)
 
 
 class LoadForecaster:
