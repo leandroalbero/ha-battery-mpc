@@ -185,7 +185,11 @@ class BatteryMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 LOGGER.warning("MPC solve failed, keeping idle")
 
             # Apply action to inverter
-            await self._apply_action(result.next_action, result.next_power_w)
+            await self._apply_action(
+                result.next_action, result.next_power_w,
+                current_pv_w=current_pv_kw * 1000,
+                current_load_w=current_load_kw * 1000,
+            )
 
             # Build schedule summary (hourly)
             step_per_hour = 60 // MPC_STEP_MINUTES
@@ -296,26 +300,29 @@ class BatteryMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         except (ValueError, TypeError):
             return default
 
-    async def _apply_action(self, action: str, power_w: float) -> None:
+    async def _apply_action(
+        self, action: str, power_w: float, *,
+        current_pv_w: float = 0.0, current_load_w: float = 0.0,
+    ) -> None:
         """Send charge/discharge command to the inverter."""
         inverter_type = self._config.get("inverter_type", "generic")
 
         if inverter_type == "goodwe":
-            await self._apply_goodwe(action, power_w)
+            await self._apply_goodwe(action, power_w, current_pv_w, current_load_w)
         else:
             await self._apply_generic(action, power_w)
 
-    async def _apply_goodwe(self, action: str, power_w: float) -> None:
+    async def _apply_goodwe(
+        self, action: str, power_w: float,
+        current_pv_w: float = 0.0, current_load_w: float = 0.0,
+    ) -> None:
         """GoodWe inverter control via the HA goodwe integration.
 
-        Auto-discovers available GoodWe entities and uses them:
-        - select.goodwe_inverter_operation_mode: eco_charge / general
-        - number.goodwe_eco_mode_power: charge power as % of rated (0-100)
-        - number.goodwe_eco_mode_soc: target SoC for eco charge (0-100)
-
         Mode mapping:
-        - charge  -> set eco_mode_power + eco_mode_soc, then eco_charge
-        - discharge/idle -> general (self-use, battery covers house load)
+        - charge + solar surplus covers target → general (self-consumption,
+          battery charges from surplus solar without pulling from grid)
+        - charge + insufficient solar → eco_charge (grid-assisted charging)
+        - discharge/idle → general
         """
         mode_entity = self._config.get("goodwe_operation_mode_entity_id")
         if not mode_entity:
@@ -337,49 +344,64 @@ class BatteryMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 await self._set_number(dod_entity, target_dod)
 
         if action == "charge":
-            if power_pct_entity and self._entity_exists(power_pct_entity):
-                # Safety: leave headroom for house consumption so we don't
-                # exceed the contracted grid import limit (5.5 kW typical).
-                grid_limit_w = self._config.get("max_grid_import_kw", 5.5) * 1000
-                load_entity = self._config.get("load_sensor_entity_id")
-                current_load_w = 0.0
-                if load_entity:
-                    current_load_w = self._get_sensor_value(load_entity, default=1500.0)
-                else:
-                    current_load_w = 1500.0  # safe default
-                safe_charge_w = max(0, min(power_w, grid_limit_w - current_load_w))
+            # Check if solar surplus can cover the charge target.
+            # eco_charge mode charges from grid+solar indiscriminately — it will
+            # pull from the grid even when solar surplus is available.  Use
+            # general (self-consumption) mode instead when solar covers it so
+            # the inverter charges only from surplus PV.
+            solar_surplus_w = max(0, current_pv_w - current_load_w)
+            use_solar_only = solar_surplus_w >= power_w * 0.8 and current_pv_w > 100
 
-                # Read actual battery charge power for PI feedback
-                actual_charge_w: float | None = None
-                batt_entity = self._config.get("battery_power_entity_id")
-                if batt_entity and self._last_action == "charge":
-                    raw = self._get_sensor_value(batt_entity, default=float("nan"))
-                    if not (raw != raw):  # not NaN
-                        # GoodWe: negative = charging. We want charge rate as positive.
-                        actual_charge_w = abs(raw)
+            if use_solar_only:
+                LOGGER.info(
+                    "GoodWe: solar surplus %.0fW covers charge target %.0fW, "
+                    "using general mode (no grid charging)",
+                    solar_surplus_w, power_w,
+                )
+                if self._last_action == "charge":
+                    self._power_pi.reset()
+                target_mode = "general"
+            else:
+                # Not enough solar — use eco_charge to pull from grid
+                if power_pct_entity and self._entity_exists(power_pct_entity):
+                    grid_limit_w = self._config.get("max_grid_import_kw", 5.5) * 1000
+                    load_entity = self._config.get("load_sensor_entity_id")
+                    load_w = 0.0
+                    if load_entity:
+                        load_w = self._get_sensor_value(load_entity, default=1500.0)
+                    else:
+                        load_w = 1500.0  # safe default
+                    safe_charge_w = max(0, min(power_w, grid_limit_w - load_w))
 
-                # PI controller computes corrected eco_mode_power %
-                target_pct = self._power_pi.compute(safe_charge_w, actual_charge_w)
+                    # Read actual battery charge power for PI feedback
+                    actual_charge_w: float | None = None
+                    batt_entity = self._config.get("battery_power_entity_id")
+                    if batt_entity and self._last_action == "charge":
+                        raw = self._get_sensor_value(batt_entity, default=float("nan"))
+                        if not (raw != raw):  # not NaN
+                            actual_charge_w = abs(raw)
 
-                current_pct = self._get_sensor_value(power_pct_entity, default=-1)
-                if current_pct != target_pct:
-                    LOGGER.info(
-                        "GoodWe: eco_mode_power %d%% -> %d%% "
-                        "(LP=%.0fW, safe=%.0fW, actual=%s, load=%.0fW)",
-                        current_pct, target_pct,
-                        power_w, safe_charge_w,
-                        f"{actual_charge_w:.0f}W" if actual_charge_w is not None else "n/a",
-                        current_load_w,
-                    )
-                    await self._set_number(power_pct_entity, target_pct)
+                    target_pct = self._power_pi.compute(safe_charge_w, actual_charge_w)
 
-            # Set target SoC to 100% for charging
-            if soc_target_entity and self._entity_exists(soc_target_entity):
-                current_soc_target = self._get_sensor_value(soc_target_entity, default=-1)
-                if current_soc_target != 100:
-                    await self._set_number(soc_target_entity, 100)
+                    current_pct = self._get_sensor_value(power_pct_entity, default=-1)
+                    if current_pct != target_pct:
+                        LOGGER.info(
+                            "GoodWe: eco_mode_power %d%% -> %d%% "
+                            "(LP=%.0fW, safe=%.0fW, actual=%s, load=%.0fW)",
+                            current_pct, target_pct,
+                            power_w, safe_charge_w,
+                            f"{actual_charge_w:.0f}W" if actual_charge_w is not None else "n/a",
+                            load_w,
+                        )
+                        await self._set_number(power_pct_entity, target_pct)
 
-            target_mode = "eco_charge"
+                # Set target SoC to 100% for charging
+                if soc_target_entity and self._entity_exists(soc_target_entity):
+                    current_soc_target = self._get_sensor_value(soc_target_entity, default=-1)
+                    if current_soc_target != 100:
+                        await self._set_number(soc_target_entity, 100)
+
+                target_mode = "eco_charge"
         else:
             # Reset PI when leaving charge mode
             if self._last_action == "charge":
