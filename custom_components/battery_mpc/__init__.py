@@ -7,13 +7,15 @@ by optimally timing battery charge/discharge based on time-of-use tariffs.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from datetime import timedelta
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.event import async_track_time_interval
+from homeassistant.loader import async_get_integration
 
-from .const import DOMAIN, LOGGER
+from .const import DOMAIN, LOGGER, WATCHDOG_INTERVAL_MINUTES
 from .coordinator import BatteryMPCCoordinator
 
 PLATFORMS = [Platform.SENSOR]
@@ -29,6 +31,7 @@ class BatteryMPCData:
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Battery MPC from a config entry."""
     coordinator = BatteryMPCCoordinator(hass, entry)
+    coordinator.sw_version = str((await async_get_integration(hass, DOMAIN)).version)
 
     # Store coordinator in hass.data (compatible with all HA versions)
     hass.data.setdefault(DOMAIN, {})
@@ -36,6 +39,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     # First refresh — fetches forecast + runs MPC
     await coordinator.async_config_entry_first_refresh()
+
+    entry.async_on_unload(
+        async_track_time_interval(
+            hass, coordinator.async_watchdog, timedelta(minutes=WATCHDOG_INTERVAL_MINUTES),
+        )
+    )
 
     # Forward to sensor platform
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
