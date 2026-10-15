@@ -13,6 +13,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.event import async_track_time_interval
+from homeassistant.loader import async_get_integration
 
 from .const import DOMAIN, LOGGER, WATCHDOG_INTERVAL_MINUTES
 from .coordinator import BatteryMPCCoordinator
@@ -30,6 +31,7 @@ class BatteryMPCData:
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Battery MPC from a config entry."""
     coordinator = BatteryMPCCoordinator(hass, entry)
+    coordinator.sw_version = str((await async_get_integration(hass, DOMAIN)).version)
 
     # Store coordinator in hass.data (compatible with all HA versions)
     hass.data.setdefault(DOMAIN, {})

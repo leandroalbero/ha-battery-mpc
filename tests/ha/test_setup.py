@@ -118,3 +118,12 @@ async def test_options_form_accepts_deploy_values(hass, diag):
     assert saved["tariff"]["peak_evening"]["price"] == 0.255971
     assert saved.get("goodwe_diag_status_entity_id", "") == diag
     assert entry.state is ConfigEntryState.LOADED
+
+
+async def test_device_reports_manifest_version(hass):
+    entry = await _setup(hass, CONFIG)
+    from homeassistant.helpers import device_registry as dr
+
+    device = next(iter(dr.async_entries_for_config_entry(dr.async_get(hass), entry.entry_id)))
+    assert device.sw_version == "2.7.0"
+    assert device.model == "MPC"

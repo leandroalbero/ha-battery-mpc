@@ -77,6 +77,7 @@ class BatteryMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._mode_sent_at: datetime | None = None
         self._mode_unconfirmed = False
         self._last_success: datetime | None = None
+        self.sw_version: str | None = None
         self._stall_notified = False
 
     async def _async_setup(self) -> None:
