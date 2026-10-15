@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-import asyncio
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import numpy as np
@@ -13,8 +12,6 @@ from .const import (
     DEFAULT_GHI_TO_PV_FACTOR,
     DEFAULT_MONTHLY_FACTORS,
     LOGGER,
-    MPC_HORIZON_HOURS,
-    MPC_STEP_MINUTES,
     OPEN_METEO_URL,
 )
 
@@ -39,45 +36,16 @@ class SolarForecast:
     def age_minutes(self) -> float:
         return (datetime.now() - self._fetched_at).total_seconds() / 60
 
-    def get_pv_forecast(
-        self,
-        start: datetime,
-        steps: int | None = None,
-        step_minutes: int = MPC_STEP_MINUTES,
-    ) -> np.ndarray:
-        """Get PV power forecast in kW for the MPC horizon."""
-        if steps is None:
-            steps = MPC_HORIZON_HOURS * 60 // step_minutes
-
-        forecast = np.zeros(steps)
+    def get_pv_forecast(self, times: list[datetime]) -> np.ndarray:
+        """PV power forecast in kW at each timezone-aware time."""
         if len(self._timestamps) == 0:
-            return forecast
-
-        for i in range(steps):
-            target = start + timedelta(minutes=i * step_minutes)
-            # Find nearest hourly GHI value
-            ghi = self._interpolate_ghi(target)
-            month_factor = self._monthly.get(target.month, 1.0)
-            forecast[i] = ghi * self._factor * month_factor / 1000.0  # W -> kW
-
-        return forecast
-
-    def _interpolate_ghi(self, target: datetime) -> float:
-        """Find the GHI value for a target time by nearest-hour lookup."""
-        if len(self._timestamps) == 0:
-            return 0.0
-
-        target_naive = target.replace(tzinfo=None) if target.tzinfo else target
-        best_idx = 0
-        best_diff = float("inf")
-        for idx, ts in enumerate(self._timestamps):
-            ts_naive = ts.replace(tzinfo=None) if ts.tzinfo else ts
-            diff = abs((ts_naive - target_naive).total_seconds())
-            if diff < best_diff:
-                best_diff = diff
-                best_idx = idx
-
-        return float(self._ghi[best_idx]) if best_diff < 7200 else 0.0
+            return np.zeros(len(times))
+        # Open-Meteo hourly radiation is the mean of the preceding hour.
+        centers = np.array([(ts - timedelta(minutes=30)).timestamp() for ts in self._timestamps])
+        targets = np.array([t.timestamp() for t in times])
+        ghi = np.interp(targets, centers, self._ghi, left=0.0, right=0.0)
+        months = np.array([self._monthly.get(t.month, 1.0) for t in times])
+        return ghi * self._factor * months / 1000.0
 
 
 async def fetch_solar_forecast(
@@ -98,8 +66,9 @@ async def fetch_solar_forecast(
         "latitude": latitude,
         "longitude": longitude,
         "hourly": "shortwave_radiation",
-        "timezone": "auto",
+        "timezone": "GMT",
         "forecast_days": forecast_days,
+        "past_days": 1,
     }
     if api_key:
         params["apikey"] = api_key
@@ -113,7 +82,7 @@ async def fetch_solar_forecast(
         times_raw = hourly.get("time", [])
         ghi_raw = hourly.get("shortwave_radiation", [])
 
-        timestamps = [datetime.fromisoformat(t) for t in times_raw]
+        timestamps = [datetime.fromisoformat(t).replace(tzinfo=timezone.utc) for t in times_raw]
         ghi_values = [float(v) if v is not None else 0.0 for v in ghi_raw]
 
         LOGGER.info(
@@ -156,16 +125,6 @@ class LoadForecaster:
         for key in sums:
             self._profile[key] = sums[key] / counts[key]
 
-    def forecast(
-        self,
-        start: datetime,
-        steps: int,
-        step_minutes: int = MPC_STEP_MINUTES,
-    ) -> np.ndarray:
-        """Get load forecast in kW."""
-        result = np.zeros(steps)
-        for i in range(steps):
-            ts = start + timedelta(minutes=i * step_minutes)
-            key = (ts.hour, ts.weekday() >= 5)
-            result[i] = self._profile.get(key, 1.4)
-        return result
+    def forecast(self, times: list[datetime]) -> np.ndarray:
+        """Load forecast in kW at each local time."""
+        return np.array([self._profile.get((t.hour, t.weekday() >= 5), 1.4) for t in times])
