@@ -158,6 +158,35 @@ def build_import_rates(
     return rates
 
 
+SOC_FLOOR_MARGIN_KWH = 0.002
+
+
+def _soc_floor(min_soc_kwh: float, current_soc_kwh: float) -> float:
+    # At or below min_soc the IPM has no interior point and grid charging is forced at any price.
+    if current_soc_kwh >= min_soc_kwh + SOC_FLOOR_MARGIN_KWH:
+        return min_soc_kwh
+    return max(0.0, current_soc_kwh - SOC_FLOOR_MARGIN_KWH)
+
+
+def _import_bounds(
+    net_load: np.ndarray,
+    max_grid_import: float,
+    max_discharge_rate: float,
+    energy_above_floor: float,
+    efficiency: float,
+    dt: float,
+) -> np.ndarray:
+    # An empty battery under load above the grid limit must not make the LP infeasible.
+    energy = max(0.0, energy_above_floor)
+    bounds = np.empty(len(net_load))
+    for t, net in enumerate(net_load):
+        excess = max(0.0, net - max_grid_import)
+        covered = min(excess, max_discharge_rate, energy * efficiency / dt)
+        energy -= covered / efficiency * dt
+        bounds[t] = max(max_grid_import, net - covered)
+    return bounds
+
+
 def solve_mpc(
     solar_forecast: np.ndarray,
     load_forecast: np.ndarray,
@@ -227,19 +256,21 @@ def solve_mpc(
     b_eq = np.concatenate([b_bal, b_dyn])
 
     # Bounds
-    min_soc = min_soc_frac * battery_capacity
-    min_grid_needed = np.maximum(load_forecast - solar_forecast - max_discharge_rate, 0)
-    effective_grid_import = np.maximum(max_grid_import, min_grid_needed)
+    soc_floor = _soc_floor(min_soc_frac * battery_capacity, current_soc_kwh)
+    effective_grid_import = _import_bounds(
+        load_forecast - solar_forecast, max_grid_import, max_discharge_rate,
+        current_soc_kwh - soc_floor, efficiency, dt,
+    )
 
     lb = np.concatenate([
         np.zeros(n), np.zeros(n), np.zeros(n), np.zeros(n),
-        np.full(n, min_soc),
+        np.full(n, soc_floor),
     ])
     ub = np.concatenate([
         np.full(n, max_charge_rate),
         np.full(n, max_discharge_rate),
         effective_grid_import,
-        np.full(n, max_grid_export),
+        np.maximum(max_grid_export, solar_forecast - load_forecast),
         np.full(n, battery_capacity),
     ])
 
