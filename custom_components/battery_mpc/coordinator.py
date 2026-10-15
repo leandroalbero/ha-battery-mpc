@@ -160,7 +160,11 @@ class BatteryMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
             # Accumulate actual vs predicted PV for solar calibration.
             # Only during daylight (PV > 50W) to avoid noise at dawn/dusk.
-            if current_pv_kw > 0.05 and self._solar_forecast is not None:
+            # A full battery or capped export throttles the panels, so those samples
+            # would bias the factor low.
+            max_export_w = self._config.get("max_grid_export_kw", 5.0) * 1000
+            curtailed = current_soc_pct >= 98.0 or grid_export_w >= 0.95 * max_export_w
+            if current_pv_kw > 0.05 and not curtailed and self._solar_forecast is not None:
                 predicted_kw = self._solar_forecast.get_pv_forecast(now, 1, MPC_STEP_MINUTES)[0]
                 self._solar_actual_wh += current_pv_kw * 1000 * interval_hours
                 self._solar_predicted_wh += predicted_kw * 1000 * interval_hours
