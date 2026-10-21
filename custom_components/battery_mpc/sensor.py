@@ -152,6 +152,7 @@ class BatteryMPCSensor(BatteryMPCEntity, SensorEntity):
             "horizon_hours": self.coordinator.data.get("horizon_hours"),
             "deferrable_load_w": self.coordinator.data.get("deferrable_load_w", 0),
             "deferrable_hold_active": self.coordinator.data.get("deferrable_hold_active", False),
+            "deferrable_battery_allowed": self.coordinator.data.get("deferrable_battery_allowed", False),
         }
 
 

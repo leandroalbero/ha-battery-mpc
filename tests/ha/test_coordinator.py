@@ -16,11 +16,16 @@ from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.update_coordinator import UpdateFailed
 from homeassistant.util import dt as dt_util
-from pytest_homeassistant_custom_component.common import MockConfigEntry, async_mock_service
+from pytest_homeassistant_custom_component.common import (
+    MockConfigEntry,
+    async_fire_time_changed,
+    async_mock_service,
+)
 
 MODE = "select.goodwe_inverter_operation_mode"
 DIAG = "sensor.diag_status"
 DEFERRABLE = "sensor.deferrable_load"
+ALLOW_BATTERY = "binary_sensor.battery_assist"
 ECO_POWER = "number.goodwe_eco_mode_power"
 DOD = "number.goodwe_depth_of_discharge_on_grid"
 CONFIG = {
@@ -479,11 +484,17 @@ async def test_deferrable_threshold_cross_is_debounced(hass, setup, freezer):
     await hass.async_block_till_done()
     assert _dod_writes(numbers) == [78]
 
-    freezer.move_to(dt_util.utcnow() + timedelta(seconds=31))
+    later = dt_util.utcnow() + timedelta(seconds=31)
+    freezer.move_to(later)
+    async_fire_time_changed(hass, later)
+    await hass.async_block_till_done()
+    assert _dod_writes(numbers) == [78, 90]
+
+    freezer.move_to(later + timedelta(seconds=31))
     hass.states.async_set(DOD, "90")
     hass.states.async_set(DEFERRABLE, "3700", {"unit_of_measurement": "W"})
     await hass.async_block_till_done()
-    assert _dod_writes(numbers) == [78, 78]
+    assert _dod_writes(numbers) == [78, 90, 78]
     assert len(plan.calls) == solved
 
 
@@ -591,6 +602,9 @@ async def test_next_action_exposes_deferrable_attributes(hass, setup):
     attrs = sensor.extra_state_attributes
     assert attrs["deferrable_load_w"] == 3700
     assert attrs["deferrable_hold_active"] is True
+    assert attrs["deferrable_battery_allowed"] is False
+    hold_at = list(attrs).index("deferrable_hold_active")
+    assert list(attrs).index("deferrable_battery_allowed") == hold_at + 1
     assert "schedule" in attrs
 
 
@@ -618,3 +632,110 @@ async def test_fail_safe_and_watchdog_release_a_held_dod(hass, setup):
         await coordinator.async_watchdog(dt_util.utcnow())
     await hass.async_block_till_done()
     assert _dod_writes(numbers) == [78, 90, 90]
+
+
+async def test_idle_deferrable_with_allow_battery_on_returns_dod_to_release(hass, setup):
+    coordinator, plan = setup
+    selects = async_mock_service(hass, "select", "select_option")
+    numbers = async_mock_service(hass, "number", "set_value")
+    _with_deferrable(coordinator, deferrable_allow_battery_entity_id=ALLOW_BATTERY)
+    hass.states.async_set("sensor.battery_state_of_charge", "22")
+    hass.states.async_set(DOD, "78")
+    hass.states.async_set(DEFERRABLE, "3700", {"unit_of_measurement": "W"})
+    hass.states.async_set(ALLOW_BATTERY, "on")
+    plan.action = "idle"
+    data = await coordinator._async_update_data()
+    assert _modes(selects) == ["general"]
+    assert _dod_writes(numbers) == [90]
+    assert coordinator._deferrable_hold_active is False
+    assert data["deferrable_battery_allowed"] is True
+    assert coordinator._deferrable_should_hold("charge") is False
+    assert coordinator._deferrable_should_hold("discharge") is False
+
+
+async def test_allow_battery_on_releases_held_dod_without_solving(hass, setup):
+    coordinator, plan = setup
+    numbers = async_mock_service(hass, "number", "set_value")
+    async_mock_service(hass, "select", "select_option")
+    _with_deferrable(coordinator, deferrable_allow_battery_entity_id=ALLOW_BATTERY)
+    hass.states.async_set("sensor.battery_state_of_charge", "22")
+    hass.states.async_set(DEFERRABLE, "3700", {"unit_of_measurement": "W"})
+    hass.states.async_set(ALLOW_BATTERY, "off")
+    plan.action = "idle"
+    await coordinator._async_update_data()
+    assert _dod_writes(numbers) == [78]
+    hass.states.async_set(DOD, "78")
+    coordinator.async_track_deferrable()
+    solved = len(plan.calls)
+    hass.states.async_set(ALLOW_BATTERY, "on")
+    await hass.async_block_till_done()
+    assert len(plan.calls) == solved
+    assert _dod_writes(numbers) == [78, 90]
+    assert coordinator._deferrable_hold_active is False
+
+
+async def test_allow_battery_off_reholds_without_solving(hass, setup):
+    coordinator, plan = setup
+    numbers = async_mock_service(hass, "number", "set_value")
+    async_mock_service(hass, "select", "select_option")
+    _with_deferrable(coordinator, deferrable_allow_battery_entity_id=ALLOW_BATTERY)
+    hass.states.async_set("sensor.battery_state_of_charge", "22")
+    hass.states.async_set(DEFERRABLE, "3700", {"unit_of_measurement": "W"})
+    hass.states.async_set(ALLOW_BATTERY, "on")
+    plan.action = "idle"
+    await coordinator._async_update_data()
+    hass.states.async_set(DOD, "90")
+    coordinator.async_track_deferrable()
+    solved = len(plan.calls)
+    before = _dod_writes(numbers)
+    assert before == []
+    hass.states.async_set(ALLOW_BATTERY, "off")
+    await hass.async_block_till_done()
+    assert len(plan.calls) == solved
+    assert _dod_writes(numbers) == [*before, 78]
+    assert coordinator._deferrable_hold_active is True
+
+
+async def test_absent_allow_battery_key_still_holds(hass, setup):
+    coordinator, plan = setup
+    numbers = async_mock_service(hass, "number", "set_value")
+    async_mock_service(hass, "select", "select_option")
+    _with_deferrable(coordinator)
+    hass.states.async_set("sensor.battery_state_of_charge", "22")
+    hass.states.async_set(DEFERRABLE, "3700", {"unit_of_measurement": "W"})
+    plan.action = "idle"
+    data = await coordinator._async_update_data()
+    assert "deferrable_allow_battery_entity_id" not in coordinator._config
+    assert getattr(coordinator, "_deferrable_allow_unsub", None) is None
+    assert _dod_writes(numbers) == [78]
+    assert data["deferrable_hold_active"] is True
+    assert data.get("deferrable_battery_allowed") is False
+
+
+@pytest.mark.parametrize("state", ["unavailable", "unknown"])
+async def test_unavailable_allow_battery_is_off_and_holds(hass, setup, state):
+    coordinator, plan = setup
+    numbers = async_mock_service(hass, "number", "set_value")
+    async_mock_service(hass, "select", "select_option")
+    _with_deferrable(coordinator, deferrable_allow_battery_entity_id=ALLOW_BATTERY)
+    hass.states.async_set("sensor.battery_state_of_charge", "22")
+    hass.states.async_set(DEFERRABLE, "3700", {"unit_of_measurement": "W"})
+    hass.states.async_set(ALLOW_BATTERY, state)
+    plan.action = "idle"
+    data = await coordinator._async_update_data()
+    assert _dod_writes(numbers) == [78]
+    assert coordinator._deferrable_hold_active is True
+    assert data.get("deferrable_battery_allowed") is False
+
+
+async def test_allow_battery_listener_unsubscribes_on_shutdown(hass):
+    _set_states(hass)
+    entry = MockConfigEntry(
+        domain="battery_mpc",
+        data={**CONFIG, "deferrable_allow_battery_entity_id": ALLOW_BATTERY},
+    )
+    entry.add_to_hass(hass)
+    armed = BatteryMPCCoordinator(hass, entry)
+    assert armed._deferrable_allow_unsub is not None
+    await armed.async_shutdown()
+    assert armed._deferrable_allow_unsub is None

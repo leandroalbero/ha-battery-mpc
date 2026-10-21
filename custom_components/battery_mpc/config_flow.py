@@ -31,6 +31,12 @@ def _deferrable_fields(current: dict[str, Any] | None = None) -> dict[Any, Any]:
                 "deferrable_threshold_w", DEFAULT_DEFERRABLE_THRESHOLD_W,
             )},
         ): vol.Coerce(float),
+        vol.Optional(
+            "deferrable_allow_battery_entity_id",
+            description={"suggested_value": current.get("deferrable_allow_battery_entity_id")},
+        ): EntitySelector(EntitySelectorConfig(
+            domain=["binary_sensor", "input_boolean", "switch"],
+        )),
     }
 
 
