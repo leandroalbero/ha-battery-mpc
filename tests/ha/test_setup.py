@@ -120,10 +120,59 @@ async def test_options_form_accepts_deploy_values(hass, diag):
     assert entry.state is ConfigEntryState.LOADED
 
 
+async def test_options_persist_deferrable_load(hass):
+    entry = await _setup(hass, {**CONFIG, "deferrable_hold_mode": "off_grid"})
+    flow = await hass.config_entries.options.async_init(entry.entry_id)
+    user_input = {
+        "battery_capacity_kwh": 15.36, "max_charge_kw": 4.5, "max_discharge_kw": 4.6,
+        "min_soc": 10, "efficiency": 98, "max_grid_import_kw": 5.0,
+        "inverter_rated_power_kw": 4.6,
+        "valley_price": 0.1228, "shoulder_price": 0.1519, "peak_price": 0.2558,
+        "export_rate": 0.0509,
+        "soc_sensor_entity_id": CONFIG["soc_sensor_entity_id"],
+        "deferrable_load_entity_id": "sensor.deferrable_load",
+        "deferrable_threshold_w": 250,
+    }
+    result = await hass.config_entries.options.async_configure(flow["flow_id"], user_input)
+    await hass.async_block_till_done()
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    saved = hass.config_entries.async_get_entry(entry.entry_id).data
+    assert saved["deferrable_load_entity_id"] == "sensor.deferrable_load"
+    assert "deferrable_hold_mode" not in saved
+    assert saved["deferrable_threshold_w"] == 250
+    assert saved["soc_sensor_entity_id"] == CONFIG["soc_sensor_entity_id"]
+
+
+async def test_reconfigure_persists_deferrable_load_without_dropping_sensors(hass):
+    entry = await _setup(hass, {**CONFIG, "deferrable_hold_mode": "backup"})
+    flow = await hass.config_entries.flow.async_init(
+        "battery_mpc",
+        context={"source": "reconfigure", "entry_id": entry.entry_id},
+    )
+    assert flow["type"] is FlowResultType.FORM
+    assert flow["step_id"] == "reconfigure"
+    result = await hass.config_entries.flow.async_configure(
+        flow["flow_id"],
+        {
+            "deferrable_load_entity_id": "sensor.deferrable_load",
+            "deferrable_threshold_w": 200,
+        },
+    )
+    await hass.async_block_till_done()
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "reconfigure_successful"
+    saved = hass.config_entries.async_get_entry(entry.entry_id).data
+    assert saved["deferrable_load_entity_id"] == "sensor.deferrable_load"
+    assert "deferrable_hold_mode" not in saved
+    assert saved["deferrable_threshold_w"] == 200
+    assert saved["soc_sensor_entity_id"] == CONFIG["soc_sensor_entity_id"]
+    assert saved["goodwe_operation_mode_entity_id"] == CONFIG["goodwe_operation_mode_entity_id"]
+
+
 async def test_device_reports_manifest_version(hass):
     entry = await _setup(hass, CONFIG)
     from homeassistant.helpers import device_registry as dr
 
     device = next(iter(dr.async_entries_for_config_entry(dr.async_get(hass), entry.entry_id)))
-    assert device.sw_version == "2.7.0"
+    assert device.sw_version == "2.8.0"
     assert device.model == "MPC"

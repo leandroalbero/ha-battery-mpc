@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import math
+from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta
 from functools import partial
 from pathlib import Path
@@ -11,17 +13,20 @@ from typing import Any
 import numpy as np
 from homeassistant.components import persistent_notification
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+from homeassistant.core import Event, HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import dt as dt_util
 
 from .calibration import CalibrationState, finalize_day, record_sample
 from .const import (
+    DEFAULT_DEFERRABLE_THRESHOLD_W,
     DEFAULT_EXPORT_RATE,
     DEFAULT_MAX_GRID_IMPORT_KW,
     DEFAULT_MONTHLY_FACTORS,
     DEFAULT_TARIFF,
+    DEFERRABLE_REACT_SECONDS,
     DOMAIN,
     FORECAST_REFRESH_MINUTES,
     LOAD_HISTORY_DAYS,
@@ -42,6 +47,52 @@ from .tariff import offpeak_mask, rate_at, step_times
 
 UNAVAILABLE_STATES = ("unknown", "unavailable")
 STALLED_NOTIFICATION_ID = f"{DOMAIN}_stalled"
+
+
+def _state_watts(state) -> float | None:
+    """Power sensor reading in watts. Missing unit is treated as W, same as other reads."""
+    if state is None or state.state in UNAVAILABLE_STATES:
+        return None
+    try:
+        value = float(state.state)
+    except (ValueError, TypeError):
+        return None
+    unit = state.attributes.get("unit_of_measurement")
+    if isinstance(unit, str) and unit.lower() == "kw":
+        return value * 1000.0
+    return value
+
+
+def _net_load_history(
+    house_states: list,
+    deferrable_states: list,
+) -> list[tuple[datetime, float]]:
+    steps: list[tuple[datetime, float]] = []
+    for state in deferrable_states:
+        watts = _state_watts(state)
+        if watts is None:
+            continue
+        steps.append((state.last_changed, max(0.0, watts)))
+    steps.sort(key=lambda item: item[0])
+
+    history: list[tuple[datetime, float]] = []
+    index = 0
+    active_w = 0.0
+    for state in house_states:
+        if state.state in UNAVAILABLE_STATES:
+            continue
+        try:
+            house_kw = float(state.state) / 1000.0
+        except (ValueError, TypeError):
+            continue
+        while index < len(steps) and steps[index][0] <= state.last_changed:
+            active_w = steps[index][1]
+            index += 1
+        history.append((
+            dt_util.as_local(state.last_changed),
+            max(0.0, house_kw - active_w / 1000.0),
+        ))
+    return history
 
 
 class BatteryMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
@@ -79,6 +130,13 @@ class BatteryMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._last_success: datetime | None = None
         self.sw_version: str | None = None
         self._stall_notified = False
+        self._deferrable_hold_active = False
+        self._deferrable_unsub = None
+        self._deferrable_reacted_at: datetime | None = None
+        self._deferrable_cross_pending = False
+        self._cycle_active = False
+        self._actuate_held = False
+        self.async_track_deferrable()
 
     async def _async_setup(self) -> None:
         text = await self.hass.async_add_executor_job(self._read_calibration_file)
@@ -87,17 +145,23 @@ class BatteryMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             LOGGER.info("Loaded solar calibration: %s", self._calibration.factors)
 
     async def _async_update_data(self) -> dict[str, Any]:
+        self._cycle_active = True
         try:
-            async with asyncio.timeout(UPDATE_TIMEOUT_SECONDS):
-                data = await self._async_run_cycle()
-        except Exception as err:
-            await self._async_fail_safe()
-            raise UpdateFailed(f"MPC optimization failed: {err!r}") from err
-        self._last_success = dt_util.utcnow()
-        if self._stall_notified:
-            persistent_notification.async_dismiss(self.hass, STALLED_NOTIFICATION_ID)
-            self._stall_notified = False
-        return data
+            try:
+                async with asyncio.timeout(UPDATE_TIMEOUT_SECONDS):
+                    data = await self._async_run_cycle()
+            except Exception as err:
+                await self._async_fail_safe()
+                await self._flush_deferred_deferrable()
+                raise UpdateFailed(f"MPC optimization failed: {err!r}") from err
+            await self._flush_deferred_deferrable(data)
+            self._last_success = dt_util.utcnow()
+            if self._stall_notified:
+                persistent_notification.async_dismiss(self.hass, STALLED_NOTIFICATION_ID)
+                self._stall_notified = False
+            return data
+        finally:
+            self._cycle_active = False
 
     async def _async_run_cycle(self) -> dict[str, Any]:
         now_utc = dt_util.utcnow()
@@ -144,6 +208,9 @@ class BatteryMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         current_soc_kwh = current_soc_pct / 100.0 * battery_cap
 
         current_load_kw = self._read_kw(self._config.get("load_sensor_entity_id"))
+        planning_load_kw = current_load_kw
+        if current_load_kw is not None and self._config.get("deferrable_load_entity_id"):
+            planning_load_kw = max(0.0, current_load_kw - self._deferrable_load_w() / 1000.0)
         current_pv_kw = self._read_kw(self._config.get("pv_power_entity_id"))
         grid_import_w = self._read("sensor.import_grid")
         grid_export_w = self._read("sensor.export_grid")
@@ -173,8 +240,8 @@ class BatteryMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         load_fc = self._load_forecaster.forecast(times)
         if current_pv_kw is not None:
             solar_fc[0] = current_pv_kw
-        if current_load_kw is not None:
-            load_fc[0] = current_load_kw
+        if planning_load_kw is not None:
+            load_fc[0] = planning_load_kw
 
         hours = np.array([t.hour for t in times])
         offpeak = offpeak_mask(times)
@@ -243,6 +310,8 @@ class BatteryMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "schedule": schedule,
             "forecast_age_min": round(self._solar_forecast.age_minutes, 1),
             "solar_remaining_today_kwh": round(solar_remaining_kwh, 2),
+            "deferrable_load_w": round(self._deferrable_load_w()),
+            "deferrable_hold_active": self._deferrable_hold_active,
         }
 
     async def _async_fail_safe(self) -> None:
@@ -251,6 +320,7 @@ class BatteryMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._last_action = "idle"
         if self._config.get("inverter_type", "generic") == "goodwe":
             await self._ensure_goodwe_mode("general")
+            await self._sync_goodwe_dod("fail_safe")
 
     async def async_watchdog(self, _now: datetime) -> None:
         if self._last_success is None:
@@ -261,6 +331,7 @@ class BatteryMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         LOGGER.warning("No successful MPC cycle for %s", stalled_for)
         if self._config.get("inverter_type", "generic") == "goodwe":
             await self._ensure_goodwe_mode("general")
+            await self._sync_goodwe_dod("fail_safe")
         if not self._stall_notified:
             persistent_notification.async_create(
                 self.hass,
@@ -288,6 +359,10 @@ class BatteryMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         end = dt_util.utcnow()
         start = end - timedelta(days=LOAD_HISTORY_DAYS)
+        deferrable_entity = self._config.get("deferrable_load_entity_id") or None
+        entities = [load_entity]
+        if deferrable_entity:
+            entities.append(deferrable_entity)
 
         try:
             states_dict = await get_instance(self.hass).async_add_executor_job(
@@ -295,13 +370,25 @@ class BatteryMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 self.hass,
                 start,
                 end,
-                [load_entity],
+                entities,
             )
         except Exception as err:
             LOGGER.warning("Failed to fetch load history: %s", err)
             return
 
         entity_states = states_dict.get(load_entity, [])
+        if deferrable_entity:
+            history = _net_load_history(entity_states, states_dict.get(deferrable_entity, []))
+            if history:
+                self._load_forecaster.update_profile(history)
+                LOGGER.info(
+                    "Load profile updated from %d readings (%d days)",
+                    len(history), LOAD_HISTORY_DAYS,
+                )
+            else:
+                LOGGER.debug("No load history available yet, using defaults")
+            return
+
         history: list[tuple[datetime, float]] = []
         for state in entity_states:
             if state.state in UNAVAILABLE_STATES:
@@ -337,17 +424,133 @@ class BatteryMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         value = self._read(entity_id)
         return None if value is None else value / 1000.0
 
+    def _deferrable_load_w(self) -> float:
+        entity_id = self._config.get("deferrable_load_entity_id")
+        if not entity_id:
+            return 0.0
+        watts = _state_watts(self.hass.states.get(entity_id))
+        return 0.0 if watts is None else max(0.0, watts)
+
+    def _deferrable_threshold_w(self) -> float:
+        raw = self._config.get("deferrable_threshold_w", DEFAULT_DEFERRABLE_THRESHOLD_W)
+        try:
+            return float(raw)
+        except (TypeError, ValueError):
+            return float(DEFAULT_DEFERRABLE_THRESHOLD_W)
+
+    def async_track_deferrable(self) -> None:
+        if self._deferrable_unsub is not None:
+            return
+        entity_id = self._config.get("deferrable_load_entity_id")
+        if not entity_id:
+            return
+        self._deferrable_unsub = async_track_state_change_event(
+            self.hass, entity_id, self._deferrable_state_changed,
+        )
+
+    def _deferrable_should_hold(self, action: str) -> bool:
+        if not self._config.get("goodwe_dod_entity_id"):
+            return False
+        return action == "idle" and self._deferrable_load_w() > self._deferrable_threshold_w()
+
+    def _above_deferrable_threshold(self, state) -> bool:
+        watts = _state_watts(state)
+        return watts is not None and watts > self._deferrable_threshold_w()
+
+    async def _sync_goodwe_dod(self, action: str) -> None:
+        dod_entity = self._config.get("goodwe_dod_entity_id")
+        min_soc = self._config.get("min_soc", 10)
+        # Backup mode on this ES opens a grid-charge window, so hold by raising
+        # the on-grid discharge floor instead of changing operation mode.
+        target_dod = 100 - min_soc
+        holding = self._deferrable_should_hold(action)
+        if holding:
+            soc = self._read(self._config.get("soc_sensor_entity_id"))
+            if soc is None:
+                holding = False
+            else:
+                target_dod = 100 - max(min_soc, math.floor(soc))
+        self._deferrable_hold_active = holding
+        if not dod_entity:
+            return
+        current_dod = self._read(dod_entity)
+        if current_dod is not None and current_dod != target_dod:
+            LOGGER.info("GoodWe: depth_of_discharge %d%% -> %d%%", current_dod, target_dod)
+            await self._set_number(dod_entity, target_dod)
+
+    async def _deferrable_state_changed(self, event: Event) -> None:
+        old_state = event.data.get("old_state")
+        new_state = event.data.get("new_state")
+        if self._above_deferrable_threshold(old_state) == self._above_deferrable_threshold(new_state):
+            return
+        if self._cycle_active or self._actuate_lock.locked():
+            self._deferrable_cross_pending = True
+            return
+        async with self._actuate():
+            await self._react_to_deferrable_cross()
+        self._publish_deferrable_attrs()
+
+    async def _react_to_deferrable_cross(self) -> None:
+        now = dt_util.utcnow()
+        if (
+            self._deferrable_reacted_at is not None
+            and now - self._deferrable_reacted_at < timedelta(seconds=DEFERRABLE_REACT_SECONDS)
+        ):
+            return
+        self._deferrable_reacted_at = now
+        await self._sync_goodwe_dod(self._last_action)
+
+    async def _flush_deferred_deferrable(self, data: dict[str, Any] | None = None) -> None:
+        while self._deferrable_cross_pending:
+            self._deferrable_cross_pending = False
+            async with self._actuate():
+                await self._react_to_deferrable_cross()
+            if data is not None:
+                data["deferrable_hold_active"] = self._deferrable_hold_active
+                data["deferrable_load_w"] = round(self._deferrable_load_w())
+
+    def _publish_deferrable_attrs(self) -> None:
+        if not self.data:
+            return
+        self.data["deferrable_load_w"] = round(self._deferrable_load_w())
+        self.data["deferrable_hold_active"] = self._deferrable_hold_active
+        self.async_update_listeners()
+
+    @asynccontextmanager
+    async def _actuate(self):
+        if self._actuate_held:
+            yield
+            return
+        async with self._actuate_lock:
+            self._actuate_held = True
+            try:
+                yield
+            finally:
+                while self._deferrable_cross_pending:
+                    self._deferrable_cross_pending = False
+                    await self._react_to_deferrable_cross()
+                self._actuate_held = False
+
+    async def async_shutdown(self) -> None:
+        unsub = self._deferrable_unsub
+        self._deferrable_unsub = None
+        if unsub is not None:
+            unsub()
+        await super().async_shutdown()
+
     async def _apply_action(
         self, action: str, power_w: float, *,
         current_pv_w: float = 0.0, current_load_w: float = 0.0,
     ) -> None:
         """Send charge/discharge command to the inverter."""
+        self._deferrable_hold_active = False
         inverter_type = self._config.get("inverter_type", "generic")
 
-        if inverter_type == "goodwe":
-            await self._apply_goodwe(action, power_w, current_pv_w, current_load_w)
-        else:
-            await self._apply_generic(action, power_w)
+        async with self._actuate():
+            if inverter_type == "goodwe":
+                await self._apply_goodwe(action, power_w, current_pv_w, current_load_w)
+            else:
+                await self._apply_generic(action, power_w)
 
     async def _apply_goodwe(
         self, action: str, power_w: float,
@@ -363,15 +566,7 @@ class BatteryMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """
         power_pct_entity = self._config.get("goodwe_eco_mode_power_entity_id")
         soc_target_entity = self._config.get("goodwe_eco_mode_soc_entity_id")
-        dod_entity = self._config.get("goodwe_dod_entity_id")
-
-        # Sync inverter DoD with MPC min_soc so they agree on discharge floor.
-        # MPC min_soc=10% means DoD=90% (inverter uses DoD = 100 - min_soc).
-        target_dod = 100 - self._config.get("min_soc", 10)
-        current_dod = self._read(dod_entity)
-        if current_dod is not None and current_dod != target_dod:
-            LOGGER.info("GoodWe: depth_of_discharge %d%% -> %d%%", current_dod, target_dod)
-            await self._set_number(dod_entity, target_dod)
+        await self._sync_goodwe_dod(action)
 
         if action == "charge":
             # eco_charge pulls from the grid even when solar surplus is available,
@@ -394,6 +589,7 @@ class BatteryMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     grid_limit_w = self._config.get(
                         "max_grid_import_kw", DEFAULT_MAX_GRID_IMPORT_KW,
                     ) * 1000
+                    # Total house load, including deferrable: that draw keeps the grid budget.
                     load_w = self._read(self._config.get("load_sensor_entity_id"))
                     if load_w is None:
                         load_w = 1500.0
@@ -437,7 +633,7 @@ class BatteryMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             LOGGER.warning("GoodWe operation mode entity not configured")
             return
 
-        async with self._actuate_lock:
+        async with self._actuate():
             state = self.hass.states.get(mode_entity)
             if state is None or state.state in UNAVAILABLE_STATES:
                 self._mode_unconfirmed = True

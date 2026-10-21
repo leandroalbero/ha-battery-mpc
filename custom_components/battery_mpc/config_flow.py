@@ -9,7 +9,29 @@ from homeassistant import config_entries
 from homeassistant.core import callback
 from homeassistant.helpers.selector import EntitySelector, EntitySelectorConfig
 
-from .const import DEFAULT_EXPORT_RATE, DEFAULT_MAX_GRID_IMPORT_KW, DEFAULT_TARIFF, DOMAIN
+from .const import (
+    DEFAULT_DEFERRABLE_THRESHOLD_W,
+    DEFAULT_EXPORT_RATE,
+    DEFAULT_MAX_GRID_IMPORT_KW,
+    DEFAULT_TARIFF,
+    DOMAIN,
+)
+
+
+def _deferrable_fields(current: dict[str, Any] | None = None) -> dict[Any, Any]:
+    current = current or {}
+    return {
+        vol.Optional(
+            "deferrable_load_entity_id",
+            description={"suggested_value": current.get("deferrable_load_entity_id")},
+        ): EntitySelector(EntitySelectorConfig(domain="sensor")),
+        vol.Optional(
+            "deferrable_threshold_w",
+            description={"suggested_value": current.get(
+                "deferrable_threshold_w", DEFAULT_DEFERRABLE_THRESHOLD_W,
+            )},
+        ): vol.Coerce(float),
+    }
 
 
 class BatteryMPCFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
@@ -113,6 +135,7 @@ class BatteryMPCFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
                 vol.Optional("battery_power_entity_id"): EntitySelector(
                     EntitySelectorConfig(domain="sensor"),
                 ),
+                **_deferrable_fields(),
                 vol.Required("inverter_type", default="goodwe"): vol.In(
                     {"goodwe": "GoodWe", "generic": "Generic"},
                 ),
@@ -185,6 +208,20 @@ class BatteryMPCFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
             }),
         )
 
+    async def async_step_reconfigure(
+        self, user_input: dict[str, Any] | None = None,
+    ) -> config_entries.ConfigFlowResult:
+        """Edit the optional deferrable-load settings without walking setup again."""
+        entry = self._get_reconfigure_entry()
+        if user_input is not None:
+            data = {key: value for key, value in entry.data.items() if key != "deferrable_hold_mode"}
+            data.update(user_input)
+            return self.async_update_reload_and_abort(entry, data=data)
+        return self.async_show_form(
+            step_id="reconfigure",
+            data_schema=vol.Schema(_deferrable_fields(entry.data)),
+        )
+
     @staticmethod
     @callback
     def async_get_options_flow(
@@ -219,6 +256,7 @@ class BatteryMPCOptionsFlowHandler(config_entries.OptionsFlow):
             if er is not None:
                 new_data["export_rate"] = er
             new_data.update(user_input)
+            new_data.pop("deferrable_hold_mode", None)
             self.hass.config_entries.async_update_entry(self.config_entry, data=new_data)
             return self.async_create_entry(title="", data={})
 
@@ -254,6 +292,7 @@ class BatteryMPCOptionsFlowHandler(config_entries.OptionsFlow):
                 vol.Optional("battery_power_entity_id", default=d.get("battery_power_entity_id", "")): EntitySelector(
                     EntitySelectorConfig(domain="sensor"),
                 ),
+                **_deferrable_fields(d),
                 # GoodWe entities
                 vol.Optional("goodwe_operation_mode_entity_id", default=d.get("goodwe_operation_mode_entity_id", "")): EntitySelector(
                     EntitySelectorConfig(domain="select"),
