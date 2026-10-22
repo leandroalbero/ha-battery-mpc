@@ -459,6 +459,12 @@ class BatteryMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     self.hass, allow_id, self._deferrable_allow_changed,
                 )
 
+    def _battery_assist_active(self) -> bool:
+        return (
+            self._deferrable_battery_allowed()
+            and self._deferrable_load_w() > self._deferrable_threshold_w()
+        )
+
     def _deferrable_battery_allowed(self) -> bool:
         entity_id = self._config.get("deferrable_allow_battery_entity_id")
         if not entity_id:
@@ -533,6 +539,13 @@ class BatteryMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return
         self._deferrable_reacted_at = now
         await self._sync_goodwe_dod(self._last_action)
+        if self._config.get("inverter_type", "generic") != "goodwe":
+            return
+        if self._battery_assist_active():
+            await self._ensure_goodwe_mode("general")
+        elif self._last_action == "charge" and self._commanded_mode == "general":
+            # Assist just ended mid-plan; re-solve so eco_charge comes back with its power.
+            await self.async_request_refresh()
 
     async def _deferrable_retry(self, _now: datetime) -> None:
         self._deferrable_retry_unsub = None
@@ -607,6 +620,11 @@ class BatteryMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """
         power_pct_entity = self._config.get("goodwe_eco_mode_power_entity_id")
         soc_target_entity = self._config.get("goodwe_eco_mode_soc_entity_id")
+        lp_action = action
+        if self._battery_assist_active():
+            # eco_charge never discharges, so releasing the DoD alone left the
+            # deferrable load on the grid while the battery kept charging.
+            action = "discharge"
         await self._sync_goodwe_dod(action)
 
         if action == "charge":
@@ -665,7 +683,7 @@ class BatteryMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 self._power_pi.reset()
             target_mode = "general"
 
-        self._last_action = action
+        self._last_action = lp_action
         await self._ensure_goodwe_mode(target_mode, power_w)
 
     async def _ensure_goodwe_mode(self, target_mode: str, power_w: float = 0.0) -> None:

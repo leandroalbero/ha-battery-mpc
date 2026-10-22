@@ -739,3 +739,49 @@ async def test_allow_battery_listener_unsubscribes_on_shutdown(hass):
     assert armed._deferrable_allow_unsub is not None
     await armed.async_shutdown()
     assert armed._deferrable_allow_unsub is None
+
+
+async def test_battery_assist_overrides_eco_charge_with_general(hass, setup):
+    coordinator, plan = setup
+    selects = async_mock_service(hass, "select", "select_option")
+    numbers = async_mock_service(hass, "number", "set_value")
+    _with_deferrable(coordinator, deferrable_allow_battery_entity_id=ALLOW_BATTERY)
+    hass.states.async_set("sensor.battery_state_of_charge", "19")
+    hass.states.async_set(DEFERRABLE, "4400", {"unit_of_measurement": "W"})
+    hass.states.async_set(ALLOW_BATTERY, "on")
+    plan.action, plan.power_w = "charge", 3000
+    await coordinator._async_update_data()
+    assert _modes(selects) == ["general"]
+    assert _power_writes(numbers) == []
+
+
+async def test_battery_assist_without_deferrable_draw_keeps_eco_charge(hass, setup):
+    coordinator, plan = setup
+    selects = async_mock_service(hass, "select", "select_option")
+    async_mock_service(hass, "number", "set_value")
+    _with_deferrable(coordinator, deferrable_allow_battery_entity_id=ALLOW_BATTERY)
+    hass.states.async_set(DEFERRABLE, "0", {"unit_of_measurement": "W"})
+    hass.states.async_set(ALLOW_BATTERY, "on")
+    plan.action, plan.power_w = "charge", 3000
+    await coordinator._async_update_data()
+    assert _modes(selects) == ["eco_charge"]
+
+
+async def test_battery_assist_flip_switches_eco_charge_to_general_without_solving(hass, setup):
+    coordinator, plan = setup
+    selects = async_mock_service(hass, "select", "select_option")
+    async_mock_service(hass, "number", "set_value")
+    _with_deferrable(coordinator, deferrable_allow_battery_entity_id=ALLOW_BATTERY)
+    hass.states.async_set(DEFERRABLE, "4400", {"unit_of_measurement": "W"})
+    hass.states.async_set(ALLOW_BATTERY, "off")
+    plan.action, plan.power_w = "charge", 3000
+    await coordinator._async_update_data()
+    assert _modes(selects) == ["eco_charge"]
+    hass.states.async_set(MODE, "eco_charge")
+    coordinator.async_track_deferrable()
+    solved = len(plan.calls)
+
+    hass.states.async_set(ALLOW_BATTERY, "on")
+    await hass.async_block_till_done()
+    assert _modes(selects) == ["eco_charge", "general"]
+    assert len(plan.calls) == solved
