@@ -648,10 +648,13 @@ class BatteryMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     grid_limit_w = self._config.get(
                         "max_grid_import_kw", DEFAULT_MAX_GRID_IMPORT_KW,
                     ) * 1000
-                    # Total house load, including deferrable: that draw keeps the grid budget.
                     load_w = self._read(self._config.get("load_sensor_entity_id"))
                     if load_w is None:
                         load_w = 1500.0
+                    # The battery charge has priority on the grid budget: a deferrable
+                    # load (EV) backs off for it. When the EV should come first, the
+                    # allow-battery entity is on and this branch isn't reached.
+                    load_w = max(0.0, load_w - self._deferrable_load_w())
                     safe_charge_w = max(0, min(power_w, grid_limit_w - load_w))
 
                     actual_charge_w: float | None = None

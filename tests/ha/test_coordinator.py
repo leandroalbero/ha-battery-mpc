@@ -380,7 +380,7 @@ async def test_discharge_with_deferrable_above_threshold_releases_dod(hass, setu
     assert coordinator._deferrable_hold_active is False
 
 
-async def test_charge_safe_limit_counts_total_load_including_deferrable(hass, setup):
+async def test_battery_charge_has_priority_over_the_deferrable_load(hass, setup):
     coordinator, plan = setup
     selects = async_mock_service(hass, "select", "select_option")
     numbers = async_mock_service(hass, "number", "set_value")
@@ -390,8 +390,8 @@ async def test_charge_safe_limit_counts_total_load_including_deferrable(hass, se
     plan.action, plan.power_w = "charge", 3000
     await coordinator._async_update_data()
     assert _modes(selects) == ["eco_charge"]
-    # 500 W left under the 5000 W cap; 500/4600*100 rounds to 11, not the 65% of a net-load cap.
-    assert _power_writes(numbers) == [11]
+    # The EV yields: 5000 - (4500 - 3700) = 4200 W of room covers the 3000 W plan (65%).
+    assert _power_writes(numbers) == [65]
 
 
 async def test_lp_receives_house_load_minus_deferrable(hass, setup):
