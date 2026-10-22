@@ -9,7 +9,7 @@ from homeassistant import config_entries
 from homeassistant.core import callback
 from homeassistant.helpers.selector import EntitySelector, EntitySelectorConfig
 
-from .const import DOMAIN
+from .const import DEFAULT_EXPORT_RATE, DEFAULT_MAX_GRID_IMPORT_KW, DEFAULT_TARIFF, DOMAIN
 
 
 class BatteryMPCFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
@@ -54,7 +54,7 @@ class BatteryMPCFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
                 vol.Required("max_discharge_kw", default=4.8): vol.Coerce(float),
                 vol.Required("min_soc", default=10): vol.Coerce(int),
                 vol.Required("efficiency", default=95): vol.Coerce(int),
-                vol.Required("max_grid_import_kw", default=5.5): vol.Coerce(float),
+                vol.Required("max_grid_import_kw", default=DEFAULT_MAX_GRID_IMPORT_KW): vol.Coerce(float),
                 vol.Required("inverter_rated_power_kw", default=4.8): vol.Coerce(float),
             }),
         )
@@ -81,10 +81,10 @@ class BatteryMPCFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
         return self.async_show_form(
             step_id="tariff",
             data_schema=vol.Schema({
-                vol.Required("valley_price", default=0.085): vol.Coerce(float),
-                vol.Required("shoulder_price", default=0.135): vol.Coerce(float),
-                vol.Required("peak_price", default=0.197): vol.Coerce(float),
-                vol.Required("export_rate", default=0.08): vol.Coerce(float),
+                vol.Required("valley_price", default=DEFAULT_TARIFF["valley"]["price"]): vol.Coerce(float),
+                vol.Required("shoulder_price", default=DEFAULT_TARIFF["shoulder_morning"]["price"]): vol.Coerce(float),
+                vol.Required("peak_price", default=DEFAULT_TARIFF["peak_morning"]["price"]): vol.Coerce(float),
+                vol.Required("export_rate", default=DEFAULT_EXPORT_RATE): vol.Coerce(float),
             }),
         )
 
@@ -155,6 +155,9 @@ class BatteryMPCFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
                 vol.Optional("goodwe_dod_entity_id",
                              default=f"number.{prefix}_depth_of_discharge_on_grid"): EntitySelector(
                     EntitySelectorConfig(domain="number"),
+                ),
+                vol.Optional("goodwe_diag_status_entity_id"): EntitySelector(
+                    EntitySelectorConfig(domain="sensor"),
                 ),
             }),
         )
@@ -231,13 +234,13 @@ class BatteryMPCOptionsFlowHandler(config_entries.OptionsFlow):
                 vol.Required("max_discharge_kw", default=d.get("max_discharge_kw", 4.8)): vol.Coerce(float),
                 vol.Required("min_soc", default=d.get("min_soc", 10)): vol.Coerce(int),
                 vol.Required("efficiency", default=round(d.get("efficiency", 0.95) * 100)): vol.Coerce(int),
-                vol.Required("max_grid_import_kw", default=d.get("max_grid_import_kw", 5.5)): vol.Coerce(float),
+                vol.Required("max_grid_import_kw", default=d.get("max_grid_import_kw", DEFAULT_MAX_GRID_IMPORT_KW)): vol.Coerce(float),
                 vol.Required("inverter_rated_power_kw", default=d.get("inverter_rated_power_kw", 4.6)): vol.Coerce(float),
                 # Tariff
-                vol.Required("valley_price", default=tariff.get("valley", {}).get("price", 0.085)): vol.Coerce(float),
-                vol.Required("shoulder_price", default=tariff.get("shoulder_morning", {}).get("price", 0.135)): vol.Coerce(float),
-                vol.Required("peak_price", default=tariff.get("peak_morning", {}).get("price", 0.197)): vol.Coerce(float),
-                vol.Required("export_rate", default=d.get("export_rate", 0.08)): vol.Coerce(float),
+                vol.Required("valley_price", default=tariff.get("valley", {}).get("price", DEFAULT_TARIFF["valley"]["price"])): vol.Coerce(float),
+                vol.Required("shoulder_price", default=tariff.get("shoulder_morning", {}).get("price", DEFAULT_TARIFF["shoulder_morning"]["price"])): vol.Coerce(float),
+                vol.Required("peak_price", default=tariff.get("peak_morning", {}).get("price", DEFAULT_TARIFF["peak_morning"]["price"])): vol.Coerce(float),
+                vol.Required("export_rate", default=d.get("export_rate", DEFAULT_EXPORT_RATE)): vol.Coerce(float),
                 # Sensors
                 vol.Required("soc_sensor_entity_id", default=d.get("soc_sensor_entity_id", "")): EntitySelector(
                     EntitySelectorConfig(domain="sensor"),
@@ -263,6 +266,12 @@ class BatteryMPCOptionsFlowHandler(config_entries.OptionsFlow):
                 ),
                 vol.Optional("goodwe_dod_entity_id", default=d.get("goodwe_dod_entity_id", "")): EntitySelector(
                     EntitySelectorConfig(domain="number"),
+                ),
+                vol.Optional(
+                    "goodwe_diag_status_entity_id",
+                    description={"suggested_value": d.get("goodwe_diag_status_entity_id")},
+                ): EntitySelector(
+                    EntitySelectorConfig(domain="sensor"),
                 ),
             }),
         )

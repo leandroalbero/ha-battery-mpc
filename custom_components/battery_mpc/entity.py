@@ -20,6 +20,6 @@ class BatteryMPCEntity(CoordinatorEntity[BatteryMPCCoordinator]):
             identifiers={(DOMAIN, coordinator.config_entry.entry_id)},
             name="Battery MPC Controller",
             manufacturer="Powerflow Simulator",
-            model="MPC v1.0",
-            sw_version="1.0.0",
+            model="MPC",
+            sw_version=coordinator.sw_version,
         )

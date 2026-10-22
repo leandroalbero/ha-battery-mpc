@@ -18,7 +18,7 @@
           "max_charge_kw": "Max Charge Rate (kW)",
           "max_discharge_kw": "Max Discharge Rate (kW)",
           "min_soc": "Minimum SoC (%)",
-          "efficiency": "Round-trip Efficiency (%)",
+          "efficiency": "Battery Efficiency, each way (%)",
           "max_grid_import_kw": "Contracted Grid Import Limit (kW)",
           "inverter_rated_power_kw": "Inverter Rated Power (kW)"
         }
@@ -51,7 +51,8 @@
           "goodwe_operation_mode_entity_id": "Operation Mode",
           "goodwe_eco_mode_power_entity_id": "Eco Mode Power (%)",
           "goodwe_eco_mode_soc_entity_id": "Eco Mode Target SoC",
-          "goodwe_dod_entity_id": "Depth of Discharge"
+          "goodwe_dod_entity_id": "Depth of Discharge",
+          "goodwe_diag_status_entity_id": "Diag Status Sensor (optional, detects a stuck charge mode)"
         }
       },
       "inverter_generic": {
@@ -75,7 +76,7 @@
           "max_charge_kw": "Max Charge Rate (kW)",
           "max_discharge_kw": "Max Discharge Rate (kW)",
           "min_soc": "Minimum SoC (%)",
-          "efficiency": "Round-trip Efficiency (%)",
+          "efficiency": "Battery Efficiency, each way (%)",
           "max_grid_import_kw": "Grid Import Limit (kW)",
           "valley_price": "Valley Price (EUR/kWh)",
           "shoulder_price": "Shoulder Price (EUR/kWh)",
@@ -88,7 +89,8 @@
           "goodwe_operation_mode_entity_id": "GoodWe Operation Mode",
           "goodwe_eco_mode_power_entity_id": "GoodWe Eco Mode Power",
           "goodwe_eco_mode_soc_entity_id": "GoodWe Eco Mode SoC",
-          "goodwe_dod_entity_id": "GoodWe Depth of Discharge"
+          "goodwe_dod_entity_id": "GoodWe Depth of Discharge",
+          "goodwe_diag_status_entity_id": "Diag Status Sensor (optional, detects a stuck charge mode)"
         }
       }
     }

@@ -13,7 +13,7 @@ Every 5 minutes, the integration:
 1. Fetches a 48h solar irradiance forecast from Open-Meteo
 2. Applies monthly calibration factors (corrects seasonal GHI-to-PV bias)
 3. Builds a load forecast from historical sensor data
-4. Solves a linear program (scipy/HiGHS) to find the cost-optimal battery schedule
+4. Solves a linear program (built-in numpy interior-point solver) to find the cost-optimal battery schedule
 5. Sends the charge/discharge command to your inverter
 
 The LP optimizer is the same formulation proven in backtesting to save ~70 EUR/year compared to simple time-based charging strategies.
@@ -38,7 +38,7 @@ Your latitude/longitude for solar forecast (auto-filled from HA config).
 - Capacity (kWh)
 - Max charge/discharge rate (kW)
 - Minimum SoC (%)
-- Round-trip efficiency (%)
+- Battery efficiency, each way (%): applied once on charge and once on discharge
 
 ### 3. Sensors
 - **Battery SoC sensor** (required) — e.g., `sensor.battery_soc`
@@ -82,17 +82,23 @@ Default tariff is Spain's 2.0TD:
 
 | Period | Hours | Price (EUR/kWh) |
 |--------|-------|----------------|
-| Valley | 00-08 | 0.085 |
-| Shoulder | 08-10, 14-18, 22-24 | 0.134 |
-| Peak | 10-14, 18-22 | 0.182 |
-| Export | All hours | 0.08 |
+| Valley | 00-08 | 0.1228 |
+| Shoulder | 08-10, 14-18, 22-24 | 0.1519 |
+| Peak | 10-14, 18-22 | 0.2558 |
+| Export | All hours | 0.0509 |
 
-Custom tariffs can be set via the options flow (coming soon) or by editing the config entry data.
+Prices include taxes. Weekends and the fixed-date national holidays (1 Jan, 6 Jan, 1 May, 15 Aug, 12 Oct, 1 Nov, 6 Dec, 8 Dec, 25 Dec) are valley all day. Prices can be changed in the integration's options.
+
+## Fail-safe behaviour
+
+- If the battery SoC sensor is unavailable, or a cycle fails or runs longer than 3 minutes, no plan is made and a GoodWe inverter is set to self-consumption (`general`).
+- The controller remembers the mode it asked for and re-sends it when a write failed, when the inverter entities come back from unavailable, once an hour, and (with the optional Diag Status sensor configured) when the inverter reports timed charging while self-consumption was requested.
+- A watchdog on its own timer sets self-consumption and raises a persistent notification when no cycle has succeeded for 20 minutes.
+- Every inverter write times out after 30 seconds.
 
 ## Requirements
 
-- Home Assistant 2024.1.0+
-- scipy (auto-installed)
+- Home Assistant 2024.8.0+
 - Internet access for Open-Meteo API
 
 ## Backtesting Results
