@@ -126,3 +126,6 @@ Tested on 2.3 years of real data (15 kWh battery, 4.8 kW charge/discharge):
 ## License
 
 MIT
+
+`deferrable_assist_min_soc` (optional): while the allow-battery entity is on and the deferrable load draws, the GoodWe on-grid floor drops to this SoC. After hitting its floor a GoodWe refuses to discharge until SoC is floor + 5%, so a lower floor while assisting releases that lock. The floor returns to `min_soc` as soon as assist ends.
+

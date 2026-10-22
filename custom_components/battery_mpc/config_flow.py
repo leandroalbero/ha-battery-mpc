@@ -37,6 +37,10 @@ def _deferrable_fields(current: dict[str, Any] | None = None) -> dict[Any, Any]:
         ): EntitySelector(EntitySelectorConfig(
             domain=["binary_sensor", "input_boolean", "switch"],
         )),
+        vol.Optional(
+            "deferrable_assist_min_soc",
+            description={"suggested_value": current.get("deferrable_assist_min_soc")},
+        ): vol.All(vol.Coerce(int), vol.Range(min=0, max=99)),
     }
 
 

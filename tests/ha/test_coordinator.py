@@ -785,3 +785,25 @@ async def test_battery_assist_flip_switches_eco_charge_to_general_without_solvin
     await hass.async_block_till_done()
     assert _modes(selects) == ["eco_charge", "general"]
     assert len(plan.calls) == solved
+
+
+async def test_battery_assist_lowers_the_floor_to_the_assist_min_soc(hass, setup):
+    coordinator, plan = setup
+    async_mock_service(hass, "select", "select_option")
+    numbers = async_mock_service(hass, "number", "set_value")
+    _with_deferrable(
+        coordinator,
+        deferrable_allow_battery_entity_id=ALLOW_BATTERY,
+        deferrable_assist_min_soc=5,
+    )
+    hass.states.async_set("sensor.battery_state_of_charge", "13")
+    hass.states.async_set(DEFERRABLE, "4800", {"unit_of_measurement": "W"})
+    hass.states.async_set(ALLOW_BATTERY, "on")
+    plan.action, plan.power_w = "charge", 1800
+    await coordinator._async_update_data()
+    assert _dod_writes(numbers) == [95]
+
+    hass.states.async_set(DOD, "95")
+    hass.states.async_set(ALLOW_BATTERY, "off")
+    await coordinator._async_update_data()
+    assert _dod_writes(numbers) == [95, 90]

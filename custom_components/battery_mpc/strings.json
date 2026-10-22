@@ -43,6 +43,7 @@
           "battery_power_entity_id": "Battery Power Sensor (optional, enables PI correction)",
           "deferrable_load_entity_id": "Deferrable Load Power Sensor (optional)",
           "deferrable_threshold_w": "Deferrable Load Threshold (W)",
+          "deferrable_assist_min_soc": "Battery Floor While Assisting (%)",
           "deferrable_allow_battery_entity_id": "Allow Battery While Deferrable Load (optional)",
           "inverter_type": "Inverter Type"
         }
@@ -73,6 +74,7 @@
         "data": {
           "deferrable_load_entity_id": "Deferrable Load Power Sensor (optional)",
           "deferrable_threshold_w": "Deferrable Load Threshold (W)",
+          "deferrable_assist_min_soc": "Battery Floor While Assisting (%)",
           "deferrable_allow_battery_entity_id": "Allow Battery While Deferrable Load (optional)"
         }
       }
@@ -100,6 +102,7 @@
           "battery_power_entity_id": "Battery Power Sensor (PI correction)",
           "deferrable_load_entity_id": "Deferrable Load Power Sensor (optional)",
           "deferrable_threshold_w": "Deferrable Load Threshold (W)",
+          "deferrable_assist_min_soc": "Battery Floor While Assisting (%)",
           "deferrable_allow_battery_entity_id": "Allow Battery While Deferrable Load (optional)",
           "goodwe_operation_mode_entity_id": "GoodWe Operation Mode",
           "goodwe_eco_mode_power_entity_id": "GoodWe Eco Mode Power",

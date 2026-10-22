@@ -496,6 +496,11 @@ class BatteryMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             else:
                 target_dod = 100 - max(min_soc, math.floor(soc))
         self._deferrable_hold_active = holding
+        assist_floor = self._config.get("deferrable_assist_min_soc")
+        if not holding and assist_floor is not None and self._battery_assist_active():
+            # GoodWe locks discharge after hitting the floor until SoC is floor + 5%;
+            # a lower floor while assisting is what releases that lock.
+            target_dod = 100 - int(assist_floor)
         if not dod_entity:
             return
         current_dod = self._read(dod_entity)
