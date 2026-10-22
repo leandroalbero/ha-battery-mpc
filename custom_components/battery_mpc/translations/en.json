@@ -43,6 +43,8 @@
           "battery_power_entity_id": "Battery Power Sensor (optional, enables PI correction)",
           "deferrable_load_entity_id": "Deferrable Load Power Sensor (optional)",
           "deferrable_threshold_w": "Deferrable Load Threshold (W)",
+          "deferrable_assist_min_soc": "Battery Floor While Assisting (%)",
+          "deferrable_allow_battery_entity_id": "Allow Battery While Deferrable Load (optional)",
           "inverter_type": "Inverter Type"
         }
       },
@@ -68,10 +70,12 @@
       },
       "reconfigure": {
         "title": "Deferrable Load",
-        "description": "Optional power sensor excluded from the house-load forecast. While it is above the threshold and the plan is idle, the on-grid discharge floor is raised to the current SoC so the battery does not discharge into that load.",
+        "description": "Optional power sensor excluded from the house-load forecast. While it is above the threshold and the plan is idle, the on-grid discharge floor is raised to the current SoC so the battery does not discharge into that load. While the allow-battery entity is on, that hold is released.",
         "data": {
           "deferrable_load_entity_id": "Deferrable Load Power Sensor (optional)",
-          "deferrable_threshold_w": "Deferrable Load Threshold (W)"
+          "deferrable_threshold_w": "Deferrable Load Threshold (W)",
+          "deferrable_assist_min_soc": "Battery Floor While Assisting (%)",
+          "deferrable_allow_battery_entity_id": "Allow Battery While Deferrable Load (optional)"
         }
       }
     }
@@ -98,6 +102,8 @@
           "battery_power_entity_id": "Battery Power Sensor (PI correction)",
           "deferrable_load_entity_id": "Deferrable Load Power Sensor (optional)",
           "deferrable_threshold_w": "Deferrable Load Threshold (W)",
+          "deferrable_assist_min_soc": "Battery Floor While Assisting (%)",
+          "deferrable_allow_battery_entity_id": "Allow Battery While Deferrable Load (optional)",
           "goodwe_operation_mode_entity_id": "GoodWe Operation Mode",
           "goodwe_eco_mode_power_entity_id": "GoodWe Eco Mode Power",
           "goodwe_eco_mode_soc_entity_id": "GoodWe Eco Mode SoC",

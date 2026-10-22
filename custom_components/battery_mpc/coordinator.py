@@ -15,7 +15,7 @@ from homeassistant.components import persistent_notification
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import Event, HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
-from homeassistant.helpers.event import async_track_state_change_event
+from homeassistant.helpers.event import async_call_later, async_track_state_change_event
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import dt as dt_util
 
@@ -47,6 +47,10 @@ from .tariff import offpeak_mask, rate_at, step_times
 
 UNAVAILABLE_STATES = ("unknown", "unavailable")
 STALLED_NOTIFICATION_ID = f"{DOMAIN}_stalled"
+
+
+def _state_is_on(state) -> bool:
+    return state is not None and state.state not in UNAVAILABLE_STATES and state.state == "on"
 
 
 def _state_watts(state) -> float | None:
@@ -132,6 +136,8 @@ class BatteryMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._stall_notified = False
         self._deferrable_hold_active = False
         self._deferrable_unsub = None
+        self._deferrable_allow_unsub = None
+        self._deferrable_retry_unsub = None
         self._deferrable_reacted_at: datetime | None = None
         self._deferrable_cross_pending = False
         self._cycle_active = False
@@ -312,6 +318,7 @@ class BatteryMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "solar_remaining_today_kwh": round(solar_remaining_kwh, 2),
             "deferrable_load_w": round(self._deferrable_load_w()),
             "deferrable_hold_active": self._deferrable_hold_active,
+            "deferrable_battery_allowed": self._deferrable_battery_allowed(),
         }
 
     async def _async_fail_safe(self) -> None:
@@ -439,17 +446,35 @@ class BatteryMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return float(DEFAULT_DEFERRABLE_THRESHOLD_W)
 
     def async_track_deferrable(self) -> None:
-        if self._deferrable_unsub is not None:
-            return
-        entity_id = self._config.get("deferrable_load_entity_id")
-        if not entity_id:
-            return
-        self._deferrable_unsub = async_track_state_change_event(
-            self.hass, entity_id, self._deferrable_state_changed,
+        if self._deferrable_unsub is None:
+            entity_id = self._config.get("deferrable_load_entity_id")
+            if entity_id:
+                self._deferrable_unsub = async_track_state_change_event(
+                    self.hass, entity_id, self._deferrable_state_changed,
+                )
+        if self._deferrable_allow_unsub is None:
+            allow_id = self._config.get("deferrable_allow_battery_entity_id")
+            if allow_id:
+                self._deferrable_allow_unsub = async_track_state_change_event(
+                    self.hass, allow_id, self._deferrable_allow_changed,
+                )
+
+    def _battery_assist_active(self) -> bool:
+        return (
+            self._deferrable_battery_allowed()
+            and self._deferrable_load_w() > self._deferrable_threshold_w()
         )
+
+    def _deferrable_battery_allowed(self) -> bool:
+        entity_id = self._config.get("deferrable_allow_battery_entity_id")
+        if not entity_id:
+            return False
+        return _state_is_on(self.hass.states.get(entity_id))
 
     def _deferrable_should_hold(self, action: str) -> bool:
         if not self._config.get("goodwe_dod_entity_id"):
+            return False
+        if self._deferrable_battery_allowed():
             return False
         return action == "idle" and self._deferrable_load_w() > self._deferrable_threshold_w()
 
@@ -471,6 +496,11 @@ class BatteryMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             else:
                 target_dod = 100 - max(min_soc, math.floor(soc))
         self._deferrable_hold_active = holding
+        assist_floor = self._config.get("deferrable_assist_min_soc")
+        if not holding and assist_floor is not None and self._battery_assist_active():
+            # GoodWe locks discharge after hitting the floor until SoC is floor + 5%;
+            # a lower floor while assisting is what releases that lock.
+            target_dod = 100 - int(assist_floor)
         if not dod_entity:
             return
         current_dod = self._read(dod_entity)
@@ -483,6 +513,16 @@ class BatteryMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         new_state = event.data.get("new_state")
         if self._above_deferrable_threshold(old_state) == self._above_deferrable_threshold(new_state):
             return
+        await self._queue_or_react_to_deferrable()
+
+    async def _deferrable_allow_changed(self, event: Event) -> None:
+        old_state = event.data.get("old_state")
+        new_state = event.data.get("new_state")
+        if _state_is_on(old_state) == _state_is_on(new_state):
+            return
+        await self._queue_or_react_to_deferrable()
+
+    async def _queue_or_react_to_deferrable(self) -> None:
         if self._cycle_active or self._actuate_lock.locked():
             self._deferrable_cross_pending = True
             return
@@ -492,13 +532,29 @@ class BatteryMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     async def _react_to_deferrable_cross(self) -> None:
         now = dt_util.utcnow()
-        if (
-            self._deferrable_reacted_at is not None
-            and now - self._deferrable_reacted_at < timedelta(seconds=DEFERRABLE_REACT_SECONDS)
-        ):
+        window = timedelta(seconds=DEFERRABLE_REACT_SECONDS)
+        if self._deferrable_reacted_at is not None and now - self._deferrable_reacted_at < window:
+            # Dropping the cross would leave a stale hold (or none) until the next
+            # LP cycle, up to 5 min; re-sync once the window ends instead.
+            if self._deferrable_retry_unsub is None:
+                delay = (self._deferrable_reacted_at + window - now).total_seconds()
+                self._deferrable_retry_unsub = async_call_later(
+                    self.hass, delay, self._deferrable_retry,
+                )
             return
         self._deferrable_reacted_at = now
         await self._sync_goodwe_dod(self._last_action)
+        if self._config.get("inverter_type", "generic") != "goodwe":
+            return
+        if self._battery_assist_active():
+            await self._ensure_goodwe_mode("general")
+        elif self._last_action == "charge" and self._commanded_mode == "general":
+            # Assist just ended mid-plan; re-solve so eco_charge comes back with its power.
+            await self.async_request_refresh()
+
+    async def _deferrable_retry(self, _now: datetime) -> None:
+        self._deferrable_retry_unsub = None
+        await self._queue_or_react_to_deferrable()
 
     async def _flush_deferred_deferrable(self, data: dict[str, Any] | None = None) -> None:
         while self._deferrable_cross_pending:
@@ -508,12 +564,14 @@ class BatteryMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             if data is not None:
                 data["deferrable_hold_active"] = self._deferrable_hold_active
                 data["deferrable_load_w"] = round(self._deferrable_load_w())
+                data["deferrable_battery_allowed"] = self._deferrable_battery_allowed()
 
     def _publish_deferrable_attrs(self) -> None:
         if not self.data:
             return
         self.data["deferrable_load_w"] = round(self._deferrable_load_w())
         self.data["deferrable_hold_active"] = self._deferrable_hold_active
+        self.data["deferrable_battery_allowed"] = self._deferrable_battery_allowed()
         self.async_update_listeners()
 
     @asynccontextmanager
@@ -532,10 +590,11 @@ class BatteryMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 self._actuate_held = False
 
     async def async_shutdown(self) -> None:
-        unsub = self._deferrable_unsub
-        self._deferrable_unsub = None
-        if unsub is not None:
-            unsub()
+        for name in ("_deferrable_unsub", "_deferrable_allow_unsub", "_deferrable_retry_unsub"):
+            unsub = getattr(self, name)
+            setattr(self, name, None)
+            if unsub is not None:
+                unsub()
         await super().async_shutdown()
 
     async def _apply_action(
@@ -566,6 +625,11 @@ class BatteryMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """
         power_pct_entity = self._config.get("goodwe_eco_mode_power_entity_id")
         soc_target_entity = self._config.get("goodwe_eco_mode_soc_entity_id")
+        lp_action = action
+        if self._battery_assist_active():
+            # eco_charge never discharges, so releasing the DoD alone left the
+            # deferrable load on the grid while the battery kept charging.
+            action = "discharge"
         await self._sync_goodwe_dod(action)
 
         if action == "charge":
@@ -589,10 +653,13 @@ class BatteryMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     grid_limit_w = self._config.get(
                         "max_grid_import_kw", DEFAULT_MAX_GRID_IMPORT_KW,
                     ) * 1000
-                    # Total house load, including deferrable: that draw keeps the grid budget.
                     load_w = self._read(self._config.get("load_sensor_entity_id"))
                     if load_w is None:
                         load_w = 1500.0
+                    # The battery charge has priority on the grid budget: a deferrable
+                    # load (EV) backs off for it. When the EV should come first, the
+                    # allow-battery entity is on and this branch isn't reached.
+                    load_w = max(0.0, load_w - self._deferrable_load_w())
                     safe_charge_w = max(0, min(power_w, grid_limit_w - load_w))
 
                     actual_charge_w: float | None = None
@@ -624,7 +691,7 @@ class BatteryMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 self._power_pi.reset()
             target_mode = "general"
 
-        self._last_action = action
+        self._last_action = lp_action
         await self._ensure_goodwe_mode(target_mode, power_w)
 
     async def _ensure_goodwe_mode(self, target_mode: str, power_w: float = 0.0) -> None:

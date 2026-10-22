@@ -96,8 +96,9 @@ Optional. A power sensor for a load the battery should not treat as ordinary hou
 - The forecast and the LP see house load minus that sensor, floored at zero.
 - The grid-import cap still uses total house load, so the deferrable load keeps priority on the contracted import and the battery charges with what is left.
 - While that load is above the threshold (default 200 W) and the plan is idle, the GoodWe on-grid depth of discharge is raised to the current SoC (`100 - max(min SoC, floor(SoC))`) so discharge stops and PV can still charge. Operation mode stays on the normal mapping (`general` for idle). Charge and discharge are unchanged. The floor returns to `100 - min SoC` when the load drops below the threshold or the plan is not idle. This needs the depth-of-discharge entity; without it there is no hold. A threshold cross reapplies the floor immediately, at most once every 30 seconds, without re-solving the plan.
+- Optional allow-battery entity (`binary_sensor`, `input_boolean`, or `switch`). While its state is `on`, the hold is released (`100 - min SoC`) regardless of the plan, so the deferrable load may use the battery. `unavailable`, `unknown`, or leaving it unset is treated as off. A flip reapplies the floor immediately, with the same 30-second debounce and without re-solving the plan. The integration does not assume what produces that entity.
 - The sensor may report W or kW. Leave it unset and behaviour is unchanged.
-- `sensor.battery_mpc_next_action` carries `deferrable_load_w` and `deferrable_hold_active`.
+- `sensor.battery_mpc_next_action` carries `deferrable_load_w`, `deferrable_hold_active`, and `deferrable_battery_allowed`.
 
 ## Fail-safe behaviour
 
@@ -125,3 +126,6 @@ Tested on 2.3 years of real data (15 kWh battery, 4.8 kW charge/discharge):
 ## License
 
 MIT
+
+`deferrable_assist_min_soc` (optional): while the allow-battery entity is on and the deferrable load draws, the GoodWe on-grid floor drops to this SoC. After hitting its floor a GoodWe refuses to discharge until SoC is floor + 5%, so a lower floor while assisting releases that lock. The floor returns to `min_soc` as soon as assist ends.
+

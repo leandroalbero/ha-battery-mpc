@@ -174,5 +174,78 @@ async def test_device_reports_manifest_version(hass):
     from homeassistant.helpers import device_registry as dr
 
     device = next(iter(dr.async_entries_for_config_entry(dr.async_get(hass), entry.entry_id)))
-    assert device.sw_version == "2.8.0"
+    assert device.sw_version == "2.9.0"
     assert device.model == "MPC"
+
+
+ALLOW_BATTERY = "binary_sensor.battery_assist"
+ALLOW_DOMAINS = ["binary_sensor", "input_boolean", "switch"]
+
+
+def _selector_domain(schema, name: str):
+    for key, selector in schema.schema.items():
+        if getattr(key, "schema", key) == name:
+            return selector.config.get("domain")
+    return None
+
+
+async def test_setup_sensors_step_offers_allow_battery_entity(hass):
+    flow = await hass.config_entries.flow.async_init("battery_mpc", context={"source": "user"})
+    flow = await hass.config_entries.flow.async_configure(
+        flow["flow_id"], {"latitude": 38.7, "longitude": -0.77},
+    )
+    flow = await hass.config_entries.flow.async_configure(
+        flow["flow_id"],
+        {
+            "battery_capacity_kwh": 15.36, "max_charge_kw": 4.5, "max_discharge_kw": 4.6,
+            "min_soc": 10, "efficiency": 98, "max_grid_import_kw": 5.0,
+            "inverter_rated_power_kw": 4.6,
+        },
+    )
+    flow = await hass.config_entries.flow.async_configure(
+        flow["flow_id"],
+        {"valley_price": 0.1228, "shoulder_price": 0.1519, "peak_price": 0.2558, "export_rate": 0.0509},
+    )
+    assert flow["step_id"] == "sensors"
+    assert _selector_domain(flow["data_schema"], "deferrable_allow_battery_entity_id") == ALLOW_DOMAINS
+
+
+async def test_options_persist_allow_battery_entity(hass):
+    entry = await _setup(hass, CONFIG)
+    flow = await hass.config_entries.options.async_init(entry.entry_id)
+    assert _selector_domain(flow["data_schema"], "deferrable_allow_battery_entity_id") == ALLOW_DOMAINS
+    user_input = {
+        "battery_capacity_kwh": 15.36, "max_charge_kw": 4.5, "max_discharge_kw": 4.6,
+        "min_soc": 10, "efficiency": 98, "max_grid_import_kw": 5.0,
+        "inverter_rated_power_kw": 4.6,
+        "valley_price": 0.1228, "shoulder_price": 0.1519, "peak_price": 0.2558,
+        "export_rate": 0.0509,
+        "soc_sensor_entity_id": CONFIG["soc_sensor_entity_id"],
+        "deferrable_allow_battery_entity_id": ALLOW_BATTERY,
+    }
+    result = await hass.config_entries.options.async_configure(flow["flow_id"], user_input)
+    await hass.async_block_till_done()
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    saved = hass.config_entries.async_get_entry(entry.entry_id).data
+    assert saved["deferrable_allow_battery_entity_id"] == ALLOW_BATTERY
+    assert saved["soc_sensor_entity_id"] == CONFIG["soc_sensor_entity_id"]
+
+
+async def test_reconfigure_persists_allow_battery_entity(hass):
+    entry = await _setup(hass, CONFIG)
+    flow = await hass.config_entries.flow.async_init(
+        "battery_mpc",
+        context={"source": "reconfigure", "entry_id": entry.entry_id},
+    )
+    assert flow["step_id"] == "reconfigure"
+    assert _selector_domain(flow["data_schema"], "deferrable_allow_battery_entity_id") == ALLOW_DOMAINS
+    result = await hass.config_entries.flow.async_configure(
+        flow["flow_id"],
+        {"deferrable_allow_battery_entity_id": ALLOW_BATTERY, "deferrable_threshold_w": 200},
+    )
+    await hass.async_block_till_done()
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "reconfigure_successful"
+    saved = hass.config_entries.async_get_entry(entry.entry_id).data
+    assert saved["deferrable_allow_battery_entity_id"] == ALLOW_BATTERY
+    assert saved["soc_sensor_entity_id"] == CONFIG["soc_sensor_entity_id"]
