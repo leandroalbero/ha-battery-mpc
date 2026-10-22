@@ -41,6 +41,8 @@
           "pv_power_entity_id": "PV Power Sensor (optional)",
           "load_sensor_entity_id": "House Consumption Sensor (optional)",
           "battery_power_entity_id": "Battery Power Sensor (optional, enables PI correction)",
+          "deferrable_load_entity_id": "Deferrable Load Power Sensor (optional)",
+          "deferrable_threshold_w": "Deferrable Load Threshold (W)",
           "inverter_type": "Inverter Type"
         }
       },
@@ -62,6 +64,14 @@
           "charge_switch_entity_id": "Charge Enable Switch",
           "discharge_switch_entity_id": "Discharge Enable Switch",
           "charge_power_entity_id": "Charge Power Number Entity"
+        }
+      },
+      "reconfigure": {
+        "title": "Deferrable Load",
+        "description": "Optional power sensor excluded from the house-load forecast. While it is above the threshold and the plan is idle, the on-grid discharge floor is raised to the current SoC so the battery does not discharge into that load.",
+        "data": {
+          "deferrable_load_entity_id": "Deferrable Load Power Sensor (optional)",
+          "deferrable_threshold_w": "Deferrable Load Threshold (W)"
         }
       }
     }
@@ -86,6 +96,8 @@
           "pv_power_entity_id": "PV Power Sensor",
           "load_sensor_entity_id": "House Consumption Sensor",
           "battery_power_entity_id": "Battery Power Sensor (PI correction)",
+          "deferrable_load_entity_id": "Deferrable Load Power Sensor (optional)",
+          "deferrable_threshold_w": "Deferrable Load Threshold (W)",
           "goodwe_operation_mode_entity_id": "GoodWe Operation Mode",
           "goodwe_eco_mode_power_entity_id": "GoodWe Eco Mode Power",
           "goodwe_eco_mode_soc_entity_id": "GoodWe Eco Mode SoC",

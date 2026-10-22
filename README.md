@@ -89,6 +89,16 @@ Default tariff is Spain's 2.0TD:
 
 Prices include taxes. Weekends and the fixed-date national holidays (1 Jan, 6 Jan, 1 May, 15 Aug, 12 Oct, 1 Nov, 6 Dec, 8 Dec, 25 Dec) are valley all day. Prices can be changed in the integration's options.
 
+## Deferrable load
+
+Optional. A power sensor for a load the battery should not treat as ordinary house consumption (an EV charger, for example). The controller does not assume what the load is.
+
+- The forecast and the LP see house load minus that sensor, floored at zero.
+- The grid-import cap still uses total house load, so the deferrable load keeps priority on the contracted import and the battery charges with what is left.
+- While that load is above the threshold (default 200 W) and the plan is idle, the GoodWe on-grid depth of discharge is raised to the current SoC (`100 - max(min SoC, floor(SoC))`) so discharge stops and PV can still charge. Operation mode stays on the normal mapping (`general` for idle). Charge and discharge are unchanged. The floor returns to `100 - min SoC` when the load drops below the threshold or the plan is not idle. This needs the depth-of-discharge entity; without it there is no hold. A threshold cross reapplies the floor immediately, at most once every 30 seconds, without re-solving the plan.
+- The sensor may report W or kW. Leave it unset and behaviour is unchanged.
+- `sensor.battery_mpc_next_action` carries `deferrable_load_w` and `deferrable_hold_active`.
+
 ## Fail-safe behaviour
 
 - If the battery SoC sensor is unavailable, or a cycle fails or runs longer than 3 minutes, no plan is made and a GoodWe inverter is set to self-consumption (`general`).

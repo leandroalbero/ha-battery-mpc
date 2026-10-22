@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import timedelta
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import numpy as np
 import pytest
@@ -20,6 +20,9 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry, async_
 
 MODE = "select.goodwe_inverter_operation_mode"
 DIAG = "sensor.diag_status"
+DEFERRABLE = "sensor.deferrable_load"
+ECO_POWER = "number.goodwe_eco_mode_power"
+DOD = "number.goodwe_depth_of_discharge_on_grid"
 CONFIG = {
     "latitude": 38.7, "longitude": -0.77,
     "battery_capacity_kwh": 15.36, "max_charge_kw": 4.5, "max_discharge_kw": 4.6,
@@ -281,3 +284,337 @@ async def test_calibration_accumulator_survives_restart(hass, setup):
     await restarted._async_setup()
     assert restarted._calibration.acc is not None
     assert restarted._calibration.acc.used_cycles == 1
+
+
+def _with_deferrable(coordinator: BatteryMPCCoordinator, **extra: object) -> None:
+    coordinator._config = {
+        **coordinator._config,
+        "deferrable_load_entity_id": DEFERRABLE,
+        **extra,
+    }
+
+
+def _power_writes(calls: list[ServiceCall]) -> list[float]:
+    return [c.data["value"] for c in calls if c.data["entity_id"] == ECO_POWER]
+
+
+def _dod_writes(calls: list[ServiceCall]) -> list[float]:
+    return [c.data["value"] for c in calls if c.data["entity_id"] == DOD]
+
+
+async def test_idle_with_deferrable_above_threshold_raises_dod_and_stays_general(hass, setup):
+    coordinator, plan = setup
+    selects = async_mock_service(hass, "select", "select_option")
+    numbers = async_mock_service(hass, "number", "set_value")
+    _with_deferrable(coordinator)
+    hass.states.async_set("sensor.battery_state_of_charge", "22")
+    hass.states.async_set(DEFERRABLE, "3700", {"unit_of_measurement": "W"})
+    plan.action = "idle"
+    await coordinator._async_update_data()
+    assert _modes(selects) == ["general"]
+    assert _dod_writes(numbers) == [78]
+    assert coordinator._deferrable_hold_active is True
+
+    hass.states.async_set(DOD, "78")
+    hass.states.async_set(MODE, "general")
+    await coordinator._async_update_data()
+    assert _modes(selects) == ["general"]
+    assert _dod_writes(numbers) == [78]
+
+
+async def test_idle_deferrable_drop_releases_dod_without_solving(hass, setup):
+    coordinator, plan = setup
+    selects = async_mock_service(hass, "select", "select_option")
+    numbers = async_mock_service(hass, "number", "set_value")
+    _with_deferrable(coordinator)
+    hass.states.async_set("sensor.battery_state_of_charge", "22")
+    hass.states.async_set(DEFERRABLE, "3700", {"unit_of_measurement": "W"})
+    plan.action = "idle"
+    await coordinator._async_update_data()
+    assert _dod_writes(numbers) == [78]
+    assert _modes(selects) == ["general"]
+
+    hass.states.async_set(DOD, "78")
+    coordinator.async_track_deferrable()
+    solved = len(plan.calls)
+    hass.states.async_set(DEFERRABLE, "0", {"unit_of_measurement": "W"})
+    await hass.async_block_till_done()
+    assert len(plan.calls) == solved
+    assert _dod_writes(numbers) == [78, 90]
+    assert _modes(selects) == ["general"]
+    assert coordinator._deferrable_hold_active is False
+
+
+async def test_idle_with_deferrable_below_threshold_stays_general(hass, setup):
+    coordinator, plan = setup
+    selects = async_mock_service(hass, "select", "select_option")
+    numbers = async_mock_service(hass, "number", "set_value")
+    _with_deferrable(coordinator)
+    hass.states.async_set("sensor.battery_state_of_charge", "22")
+    hass.states.async_set(DOD, "78")
+    hass.states.async_set(DEFERRABLE, "50", {"unit_of_measurement": "W"})
+    plan.action = "idle"
+    await coordinator._async_update_data()
+    assert _modes(selects) == ["general"]
+    assert _dod_writes(numbers) == [90]
+    assert coordinator._deferrable_hold_active is False
+
+
+async def test_discharge_with_deferrable_above_threshold_releases_dod(hass, setup):
+    coordinator, plan = setup
+    selects = async_mock_service(hass, "select", "select_option")
+    numbers = async_mock_service(hass, "number", "set_value")
+    _with_deferrable(coordinator)
+    hass.states.async_set("sensor.battery_state_of_charge", "22")
+    hass.states.async_set(DOD, "78")
+    hass.states.async_set(DEFERRABLE, "3700", {"unit_of_measurement": "W"})
+    plan.action, plan.power_w = "discharge", 1000
+    await coordinator._async_update_data()
+    assert _modes(selects) == ["general"]
+    assert _dod_writes(numbers) == [90]
+    assert coordinator._deferrable_hold_active is False
+
+
+async def test_charge_safe_limit_counts_total_load_including_deferrable(hass, setup):
+    coordinator, plan = setup
+    selects = async_mock_service(hass, "select", "select_option")
+    numbers = async_mock_service(hass, "number", "set_value")
+    _with_deferrable(coordinator)
+    hass.states.async_set("sensor.house_consumption", "4500")
+    hass.states.async_set(DEFERRABLE, "3700", {"unit_of_measurement": "W"})
+    plan.action, plan.power_w = "charge", 3000
+    await coordinator._async_update_data()
+    assert _modes(selects) == ["eco_charge"]
+    # 500 W left under the 5000 W cap; 500/4600*100 rounds to 11, not the 65% of a net-load cap.
+    assert _power_writes(numbers) == [11]
+
+
+async def test_lp_receives_house_load_minus_deferrable(hass, setup):
+    coordinator, plan = setup
+    async_mock_service(hass, "select", "select_option")
+    _with_deferrable(coordinator)
+    hass.states.async_set("sensor.house_consumption", "4500")
+    hass.states.async_set(DEFERRABLE, "3700", {"unit_of_measurement": "W"})
+    data = await coordinator._async_update_data()
+    assert plan.calls[-1]["load_forecast"][0] == pytest.approx(0.8)
+    assert data["forecast_load"] == 800
+
+
+async def test_kw_deferrable_sensor_is_scaled_to_watts(hass, setup):
+    coordinator, plan = setup
+    selects = async_mock_service(hass, "select", "select_option")
+    numbers = async_mock_service(hass, "number", "set_value")
+    _with_deferrable(coordinator)
+    hass.states.async_set("sensor.battery_state_of_charge", "22")
+    hass.states.async_set(DEFERRABLE, "3.7", {"unit_of_measurement": "kW"})
+    plan.action = "idle"
+    await coordinator._async_update_data()
+    assert _modes(selects) == ["general"]
+    assert _dod_writes(numbers) == [78]
+
+
+async def test_charge_with_deferrable_keeps_release_dod(hass, setup):
+    coordinator, plan = setup
+    selects = async_mock_service(hass, "select", "select_option")
+    numbers = async_mock_service(hass, "number", "set_value")
+    _with_deferrable(coordinator)
+    hass.states.async_set("sensor.battery_state_of_charge", "22")
+    hass.states.async_set(DOD, "78")
+    hass.states.async_set(DEFERRABLE, "3700", {"unit_of_measurement": "W"})
+    plan.action, plan.power_w = "charge", 3000
+    await coordinator._async_update_data()
+    assert _modes(selects) == ["eco_charge"]
+    assert _dod_writes(numbers) == [90]
+    assert coordinator._deferrable_hold_active is False
+
+
+async def test_idle_deferrable_without_dod_entity_does_not_hold(hass, setup):
+    coordinator, plan = setup
+    selects = async_mock_service(hass, "select", "select_option")
+    numbers = async_mock_service(hass, "number", "set_value")
+    _with_deferrable(coordinator)
+    coordinator._config.pop("goodwe_dod_entity_id")
+    hass.states.async_set("sensor.battery_state_of_charge", "22")
+    hass.states.async_set(DEFERRABLE, "3700", {"unit_of_measurement": "W"})
+    plan.action = "idle"
+    data = await coordinator._async_update_data()
+    assert _modes(selects) == ["general"]
+    assert _dod_writes(numbers) == []
+    assert data["deferrable_hold_active"] is False
+
+
+async def test_deferrable_listener_registered_only_when_configured(hass, setup):
+    coordinator, _plan = setup
+    assert coordinator._deferrable_unsub is None
+    entry = MockConfigEntry(
+        domain="battery_mpc",
+        data={**CONFIG, "deferrable_load_entity_id": DEFERRABLE},
+    )
+    entry.add_to_hass(hass)
+    armed = BatteryMPCCoordinator(hass, entry)
+    assert armed._deferrable_unsub is not None
+    await armed.async_shutdown()
+    assert armed._deferrable_unsub is None
+
+
+async def test_deferrable_threshold_cross_is_debounced(hass, setup, freezer):
+    coordinator, plan = setup
+    numbers = async_mock_service(hass, "number", "set_value")
+    async_mock_service(hass, "select", "select_option")
+    _with_deferrable(coordinator)
+    hass.states.async_set("sensor.battery_state_of_charge", "22")
+    hass.states.async_set(DEFERRABLE, "0", {"unit_of_measurement": "W"})
+    plan.action = "idle"
+    await coordinator._async_update_data()
+    coordinator.async_track_deferrable()
+    solved = len(plan.calls)
+
+    hass.states.async_set(DEFERRABLE, "3700", {"unit_of_measurement": "W"})
+    await hass.async_block_till_done()
+    assert _dod_writes(numbers) == [78]
+    assert len(plan.calls) == solved
+
+    hass.states.async_set(DOD, "78")
+    hass.states.async_set(DEFERRABLE, "0", {"unit_of_measurement": "W"})
+    await hass.async_block_till_done()
+    assert _dod_writes(numbers) == [78]
+
+    freezer.move_to(dt_util.utcnow() + timedelta(seconds=31))
+    hass.states.async_set(DOD, "90")
+    hass.states.async_set(DEFERRABLE, "3700", {"unit_of_measurement": "W"})
+    await hass.async_block_till_done()
+    assert _dod_writes(numbers) == [78, 78]
+    assert len(plan.calls) == solved
+
+
+async def test_deferrable_cross_during_actuation_applies_after(hass, setup):
+    coordinator, plan = setup
+    numbers = async_mock_service(hass, "number", "set_value")
+    async_mock_service(hass, "select", "select_option")
+    _with_deferrable(coordinator)
+    hass.states.async_set("sensor.battery_state_of_charge", "22")
+    hass.states.async_set(DEFERRABLE, "0", {"unit_of_measurement": "W"})
+    plan.action = "idle"
+    await coordinator._async_update_data()
+    coordinator.async_track_deferrable()
+    solved = len(plan.calls)
+
+    async with coordinator._actuate():
+        hass.states.async_set(DEFERRABLE, "3700", {"unit_of_measurement": "W"})
+        await hass.async_block_till_done()
+        assert _dod_writes(numbers) == []
+        assert coordinator._deferrable_cross_pending is True
+
+    assert _dod_writes(numbers) == [78]
+    assert coordinator._deferrable_cross_pending is False
+    assert len(plan.calls) == solved
+
+
+async def test_absent_deferrable_key_keeps_full_load_and_general(hass, setup):
+    coordinator, plan = setup
+    selects = async_mock_service(hass, "select", "select_option")
+    hass.states.async_set("sensor.house_consumption", "4500")
+    plan.action = "idle"
+    data = await coordinator._async_update_data()
+    assert "deferrable_load_entity_id" not in coordinator._config
+    assert coordinator._deferrable_unsub is None
+    assert _modes(selects) == ["general"]
+    assert plan.calls[-1]["load_forecast"][0] == pytest.approx(4.5)
+    assert data["forecast_load"] == 4500
+
+
+async def test_fail_safe_forces_general_while_deferrable_is_high(hass, setup):
+    coordinator, plan = setup
+    selects = async_mock_service(hass, "select", "select_option")
+    _with_deferrable(coordinator)
+    hass.states.async_set(DEFERRABLE, "3700", {"unit_of_measurement": "W"})
+    await coordinator._async_update_data()
+    hass.states.async_set(MODE, "backup")
+
+    hass.states.async_set("sensor.battery_state_of_charge", "unavailable")
+    with pytest.raises(UpdateFailed):
+        await coordinator._async_update_data()
+    assert _modes(selects) == ["general", "general"]
+
+
+async def test_load_history_subtracts_deferrable(hass):
+    _set_states(hass)
+    entry = MockConfigEntry(
+        domain="battery_mpc",
+        data={**CONFIG, "deferrable_load_entity_id": DEFERRABLE},
+    )
+    entry.add_to_hass(hass)
+    coordinator = BatteryMPCCoordinator(hass, entry)
+    when = dt_util.utcnow().replace(minute=15, second=0, microsecond=0)
+    house = MagicMock(state="4500", last_changed=when, attributes={"unit_of_measurement": "W"})
+    deferrable = MagicMock(state="3.7", last_changed=when, attributes={"unit_of_measurement": "kW"})
+    seen: dict[str, list[str]] = {}
+
+    def fake_history(_hass, _start, _end, entity_ids, *_args, **_kwargs):
+        seen["ids"] = list(entity_ids)
+        return {
+            "sensor.house_consumption": [house],
+            DEFERRABLE: [deferrable],
+        }
+
+    instance = MagicMock()
+
+    async def run(func, *args):
+        return func(*args)
+
+    instance.async_add_executor_job = run
+    with (
+        patch("homeassistant.components.recorder.get_instance", return_value=instance),
+        patch(
+            "homeassistant.components.recorder.history.get_significant_states",
+            fake_history,
+        ),
+    ):
+        await coordinator._update_load_profile()
+
+    local = dt_util.as_local(when)
+    assert seen["ids"] == ["sensor.house_consumption", DEFERRABLE]
+    assert coordinator._load_forecaster._profile[(local.hour, local.weekday() >= 5)] == pytest.approx(0.8)
+
+
+async def test_next_action_exposes_deferrable_attributes(hass, setup):
+    from custom_components.battery_mpc.sensor import SENSOR_DESCRIPTIONS, BatteryMPCSensor
+
+    coordinator, plan = setup
+    async_mock_service(hass, "select", "select_option")
+    _with_deferrable(coordinator)
+    hass.states.async_set("sensor.house_consumption", "4500")
+    hass.states.async_set(DEFERRABLE, "3700", {"unit_of_measurement": "W"})
+    plan.action = "idle"
+    coordinator.data = await coordinator._async_update_data()
+    sensor = BatteryMPCSensor(coordinator, SENSOR_DESCRIPTIONS[0])
+    attrs = sensor.extra_state_attributes
+    assert attrs["deferrable_load_w"] == 3700
+    assert attrs["deferrable_hold_active"] is True
+    assert "schedule" in attrs
+
+
+async def test_fail_safe_and_watchdog_release_a_held_dod(hass, setup):
+    coordinator, plan = setup
+    async_mock_service(hass, "select", "select_option")
+    numbers = async_mock_service(hass, "number", "set_value")
+    _with_deferrable(coordinator)
+    hass.states.async_set("sensor.battery_state_of_charge", "22")
+    hass.states.async_set(DEFERRABLE, "3700", {"unit_of_measurement": "W"})
+    plan.action = "idle"
+    await coordinator._async_update_data()
+    assert _dod_writes(numbers) == [78]
+    hass.states.async_set(DOD, "78")
+
+    with patch.object(
+        BatteryMPCCoordinator, "_async_run_cycle", AsyncMock(side_effect=RuntimeError("boom")),
+    ), pytest.raises(UpdateFailed):
+        await coordinator._async_update_data()
+    assert _dod_writes(numbers) == [78, 90]
+
+    hass.states.async_set(DOD, "78")
+    coordinator._last_success -= timedelta(minutes=25)
+    with patch.object(BatteryMPCCoordinator, "async_request_refresh", AsyncMock()):
+        await coordinator.async_watchdog(dt_util.utcnow())
+    await hass.async_block_till_done()
+    assert _dod_writes(numbers) == [78, 90, 90]
